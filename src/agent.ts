@@ -67,17 +67,59 @@ function getShellPath(): string {
   return _resolvedShellPath;
 }
 
+// Resolve full environment from user's login shell once at startup.
+// macOS GUI apps (Electron) inherit a minimal launchd env that's missing
+// everything the user sets in .zshrc / .bash_profile (NVM, GOPATH, etc.).
+let _resolvedShellEnv: Record<string, string> | null = null;
+function getShellEnv(): Record<string, string> {
+  if (_resolvedShellEnv) return { ..._resolvedShellEnv };
+  try {
+    const shell = process.env.SHELL || '/bin/zsh';
+    // Use a unique marker so we ignore any stdout noise from .zshrc/.bashrc
+    // (welcome messages, neofetch, fortune, etc.)
+    const marker = '__DORABOT_ENV_START_8f3a__';
+    const raw = execSync(
+      `${shell} -lc 'echo ${marker} && env'`,
+      { timeout: 5000, encoding: 'utf-8' },
+    );
+    // Only parse lines after the marker
+    const markerIdx = raw.indexOf(marker);
+    const envSection = markerIdx >= 0 ? raw.slice(markerIdx + marker.length + 1) : raw;
+    const env: Record<string, string> = {};
+    // Parse KEY=VALUE lines. Env var names match [A-Za-z_][A-Za-z_0-9]*.
+    // Multiline values are rare; accumulate into the last key when a line
+    // doesn't look like a new variable assignment.
+    let lastKey = '';
+    for (const line of envSection.split('\n')) {
+      const m = line.match(/^([A-Za-z_][A-Za-z_0-9]*)=(.*)/);
+      if (m) {
+        lastKey = m[1];
+        env[lastKey] = m[2];
+      } else if (lastKey && line) {
+        env[lastKey] += '\n' + line;
+      }
+    }
+    _resolvedShellEnv = env;
+  } catch {
+    // Fallback: use process.env as-is
+    _resolvedShellEnv = {};
+    for (const [key, val] of Object.entries(process.env)) {
+      if (val !== undefined) _resolvedShellEnv[key] = val;
+    }
+  }
+  return { ..._resolvedShellEnv };
+}
+
 // clean env for SDK subprocess - strip vscode vars that cause file watcher crashes
 function cleanEnvForSdk(): Record<string, string> {
-  const env: Record<string, string> = {};
-  for (const [key, val] of Object.entries(process.env)) {
-    if (val === undefined) continue;
-    if (key.startsWith('VSCODE_')) continue;
-    if (key === 'GIT_ASKPASS') continue;
-    if (key === 'ELECTRON_RUN_AS_NODE') continue;
-    if (key === 'CLAUDECODE') continue;
-    env[key] = val;
+  const env = getShellEnv();
+  // Strip vars that cause issues in the SDK subprocess
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('VSCODE_')) delete env[key];
   }
+  delete env.GIT_ASKPASS;
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.CLAUDECODE;
   // Ensure PATH includes node binary locations (critical for Electron)
   env.PATH = getShellPath();
   // use a clean tmpdir so SDK file watcher doesn't hit socket files
