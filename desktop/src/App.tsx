@@ -85,6 +85,7 @@ const ALL_NAV_ITEMS = [...PRIMARY_NAV_ITEMS, ...SECONDARY_NAV_ITEMS];
 export default function App() {
   const [showFiles, setShowFiles] = useState(false);
   const [sidebarView, setSidebarView] = useState<'files' | 'git'>('files');
+  const fileExplorerStateRef = useRef<{ viewRoot: string; expanded: string[]; selectedPath: string | null }>({ viewRoot: '', expanded: [], selectedPath: null });
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>('all');
   const [selectedChannel, setSelectedChannel] = useState<'whatsapp' | 'telegram'>('whatsapp');
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -1062,6 +1063,10 @@ export default function App() {
                 onOpenDiff={(opts) => tabState.openDiffTab(opts)}
                 onFileChange={gw.onFileChange}
                 mode={sidebarView}
+                initialViewRoot={fileExplorerStateRef.current.viewRoot || undefined}
+                initialExpanded={fileExplorerStateRef.current.expanded}
+                initialSelectedPath={fileExplorerStateRef.current.selectedPath}
+                onStateChange={(s) => { fileExplorerStateRef.current = s; }}
               />
             </ResizablePanel>
           </>

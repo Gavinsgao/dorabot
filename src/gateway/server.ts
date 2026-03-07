@@ -5010,7 +5010,7 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
           if (!pathResolve(resolved, filePath).startsWith(resolved)) return { id, error: 'path traversal not allowed' };
           try {
             const { execFileSync } = await import('node:child_process');
-            execFileSync('git', ['restore', '--staged', filePath], {
+            execFileSync('git', ['reset', 'HEAD', '--', filePath], {
               cwd: resolved, encoding: 'utf-8', timeout: 5000,
             });
             return { id, result: { unstaged: filePath } };
