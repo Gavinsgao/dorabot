@@ -811,6 +811,125 @@ export function FileExplorer({ rpc, connected, onFileClick, onOpenDiff, onFileCh
     onFileClick?.(path);
   }, [onFileClick]);
 
+  // ── Keyboard navigation (yazi / VS Code style) ────────────────────
+  // Build flat list of visible entries for arrow key navigation
+  const getVisiblePaths = useCallback((): Array<{ path: string; isDir: boolean; parent: string }> => {
+    const result: Array<{ path: string; isDir: boolean; parent: string }> = [];
+    const walk = (parentPath: string) => {
+      const state = dirs.get(parentPath);
+      if (!state) return;
+      for (const entry of state.entries) {
+        const fullPath = parentPath + '/' + entry.name;
+        const isDir = entry.type === 'directory';
+        result.push({ path: fullPath, isDir, parent: parentPath });
+        if (isDir && expanded.has(fullPath)) {
+          walk(fullPath);
+        }
+      }
+    };
+    if (viewRoot) walk(viewRoot);
+    return result;
+  }, [dirs, expanded, viewRoot]);
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  // Scroll a path's element into view (uses data-path attribute lookup via iteration, not CSS selectors)
+  const scrollPathIntoView = useCallback((path: string) => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const els = container.querySelectorAll('[data-path]');
+    for (const el of els) {
+      if ((el as HTMLElement).dataset.path === path) {
+        el.scrollIntoView({ block: 'nearest' });
+        break;
+      }
+    }
+  }, []);
+
+  const handleTreeKeyDown = useCallback((e: React.KeyboardEvent) => {
+    // Don't handle if focus is on an input/textarea
+    if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
+
+    const visible = getVisiblePaths();
+    if (visible.length === 0) return;
+
+    const currentIdx = selectedPath ? visible.findIndex(v => v.path === selectedPath) : -1;
+
+    switch (e.key) {
+      case 'ArrowDown':
+      case 'j': {
+        e.preventDefault();
+        const nextIdx = currentIdx < visible.length - 1 ? currentIdx + 1 : 0;
+        setSelectedPath(visible[nextIdx].path);
+        scrollPathIntoView(visible[nextIdx].path);
+        break;
+      }
+      case 'ArrowUp':
+      case 'k': {
+        e.preventDefault();
+        const prevIdx = currentIdx > 0 ? currentIdx - 1 : visible.length - 1;
+        setSelectedPath(visible[prevIdx].path);
+        scrollPathIntoView(visible[prevIdx].path);
+        break;
+      }
+      case 'ArrowRight':
+      case 'l': {
+        e.preventDefault();
+        if (currentIdx < 0) break;
+        const item = visible[currentIdx];
+        if (item.isDir) {
+          if (!expanded.has(item.path)) {
+            // Expand the folder, then select first child after re-render
+            toggleDir(item.path);
+          } else {
+            // Already expanded: move to first child
+            if (currentIdx + 1 < visible.length && visible[currentIdx + 1].parent === item.path) {
+              setSelectedPath(visible[currentIdx + 1].path);
+              scrollPathIntoView(visible[currentIdx + 1].path);
+            }
+          }
+        } else {
+          // Open file on right arrow (like yazi)
+          handleFileClick(item.path);
+        }
+        break;
+      }
+      case 'ArrowLeft':
+      case 'h': {
+        e.preventDefault();
+        if (currentIdx < 0) break;
+        const item = visible[currentIdx];
+        if (item.isDir && expanded.has(item.path)) {
+          // Collapse the folder
+          toggleDir(item.path);
+        } else {
+          // Move to parent folder entry, or navigate up a directory if at root level
+          const parentEntry = visible.find(v => v.path === item.parent);
+          if (parentEntry) {
+            setSelectedPath(parentEntry.path);
+            scrollPathIntoView(parentEntry.path);
+          } else if (item.parent === viewRoot) {
+            // At top level: navigate up like yazi
+            const parentDir = viewRoot.substring(0, viewRoot.lastIndexOf('/'));
+            if (parentDir) navigateTo(parentDir);
+          }
+        }
+        break;
+      }
+      case 'Enter': {
+        e.preventDefault();
+        if (currentIdx < 0) break;
+        const item = visible[currentIdx];
+        if (item.isDir) {
+          toggleDir(item.path);
+        } else {
+          handleFileClick(item.path);
+        }
+        break;
+      }
+    }
+  }, [getVisiblePaths, selectedPath, expanded, toggleDir, handleFileClick, navigateTo, viewRoot, scrollPathIntoView]);
+
   // ── Context menu dismiss ──────────────────────────────────────
   useEffect(() => {
     if (!contextMenu) return;
@@ -932,6 +1051,7 @@ export function FileExplorer({ rpc, connected, onFileClick, onOpenDiff, onFileCh
         <div
           key={fullPath}
           data-file-entry
+          data-path={fullPath}
           className={cn(
             'flex items-center gap-1.5 py-0.5 px-1 rounded-sm text-[11px] cursor-pointer group transition-colors min-w-0',
             isDot && 'opacity-50',
@@ -1010,7 +1130,13 @@ export function FileExplorer({ rpc, connected, onFileClick, onOpenDiff, onFileCh
         </div>
       </div>
       <ScrollArea className="flex-1 min-h-0">
-        <div className="py-1 min-h-full" onContextMenu={handleBlankAreaContextMenu}>
+        <div
+          ref={scrollContainerRef}
+          className="py-1 min-h-full outline-none"
+          tabIndex={0}
+          onKeyDown={handleTreeKeyDown}
+          onContextMenu={handleBlankAreaContextMenu}
+        >
           {viewRoot ? renderEntries(viewRoot, 0) : <div className="text-[11px] text-muted-foreground p-3">loading...</div>}
         </div>
       </ScrollArea>
