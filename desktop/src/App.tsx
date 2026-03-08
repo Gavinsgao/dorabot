@@ -82,6 +82,66 @@ const SECONDARY_NAV_ITEMS: { id: TabType; label: string; icon: React.ReactNode }
 
 const ALL_NAV_ITEMS = [...PRIMARY_NAV_ITEMS, ...SECONDARY_NAV_ITEMS];
 
+type FsListEntry = { name: string; type: 'file' | 'directory' };
+type QuickOpenFile = {
+  path: string;
+  rel: string;
+  name: string;
+  relLower: string;
+  nameLower: string;
+};
+
+const QUICK_OPEN_IGNORED_DIRS = new Set([
+  '.git',
+  'node_modules',
+  'dist',
+  'build',
+  'out',
+  'release',
+  '.next',
+  '.turbo',
+  '.cache',
+  '.vite',
+]);
+const QUICK_OPEN_MAX_FILES = 8000;
+const QUICK_OPEN_MAX_RESULTS = 120;
+
+function joinPath(base: string, name: string): string {
+  if (!base || base === '.') return `./${name}`;
+  if (base.endsWith('/')) return `${base}${name}`;
+  return `${base}/${name}`;
+}
+
+function toRelativePath(path: string, root: string): string {
+  if (root === '.' || !root) return path.replace(/^\.\//, '');
+  const prefix = root.endsWith('/') ? root : `${root}/`;
+  return path.startsWith(prefix) ? path.slice(prefix.length) : path;
+}
+
+function scoreQuickOpen(file: QuickOpenFile, queryLower: string): number {
+  if (!queryLower) return 0;
+  const { relLower, nameLower } = file;
+  if (nameLower === queryLower) return 0;
+  if (nameLower.startsWith(queryLower)) return 10 + nameLower.length / 1000;
+
+  const slashIndex = relLower.indexOf(`/${queryLower}`);
+  if (slashIndex >= 0) return 20 + slashIndex / 1000;
+
+  const containsIndex = relLower.indexOf(queryLower);
+  if (containsIndex >= 0) return 30 + containsIndex / 1000;
+
+  // Fuzzy subsequence match
+  let cursor = -1;
+  let distance = 0;
+  for (const ch of queryLower) {
+    const idx = relLower.indexOf(ch, cursor + 1);
+    if (idx < 0) return Number.POSITIVE_INFINITY;
+    distance += idx - cursor;
+    cursor = idx;
+  }
+  return 300 + distance;
+}
+
 function PalettePicker({ palette, glass, onPalette, onGlass }: {
   palette: string;
   glass: boolean;
@@ -188,6 +248,16 @@ export default function App() {
   const [draggingTab, setDraggingTab] = useState<Tab | null>(null);
   const { palette, glass, setPalette, setGlass } = useTheme();
   const [updateState, setUpdateState] = useState<UpdateState>({ status: 'idle' });
+  const [quickOpenOpen, setQuickOpenOpen] = useState(false);
+  const [quickOpenRoot, setQuickOpenRoot] = useState('');
+  const [quickOpenQuery, setQuickOpenQuery] = useState('');
+  const [quickOpenFiles, setQuickOpenFiles] = useState<QuickOpenFile[]>([]);
+  const [quickOpenLoading, setQuickOpenLoading] = useState(false);
+  const [quickOpenError, setQuickOpenError] = useState<string | null>(null);
+  const [quickOpenSelected, setQuickOpenSelected] = useState(0);
+  const quickOpenCacheRef = useRef<{ root: string; files: QuickOpenFile[] } | null>(null);
+  const quickOpenRequestRef = useRef(0);
+  const quickOpenInputRef = useRef<HTMLInputElement>(null);
   const notify = useCallback((body: string) => {
     const api = (window as any).electronAPI;
     if (api?.notify) {
@@ -495,6 +565,134 @@ export default function App() {
     }
   }, [tabState, gw.sessionStates]);
 
+  const resolveQuickOpenRoot = useCallback(() => {
+    const explorerRoot = fileExplorerStateRef.current.viewRoot;
+    if (explorerRoot) return explorerRoot;
+
+    const active = tabState.activeTab;
+    if (active && 'filePath' in active && active.filePath) {
+      const idx = active.filePath.lastIndexOf('/');
+      if (idx > 0) return active.filePath.slice(0, idx);
+    }
+
+    const anyFileTab = tabState.tabs.find((t): t is Tab & { filePath: string } => 'filePath' in t);
+    if (anyFileTab?.filePath) {
+      const idx = anyFileTab.filePath.lastIndexOf('/');
+      if (idx > 0) return anyFileTab.filePath.slice(0, idx);
+    }
+
+    return '.';
+  }, [tabState.activeTab, tabState.tabs]);
+
+  const buildQuickOpenIndex = useCallback(async (rootPath: string): Promise<QuickOpenFile[]> => {
+    const files: QuickOpenFile[] = [];
+    const stack = [rootPath];
+    const visited = new Set<string>();
+
+    while (stack.length > 0 && files.length < QUICK_OPEN_MAX_FILES) {
+      const dir = stack.pop() as string;
+      if (visited.has(dir)) continue;
+      visited.add(dir);
+
+      let entries: FsListEntry[];
+      try {
+        entries = await gw.rpc('fs.list', { path: dir }, 15000) as FsListEntry[];
+      } catch {
+        continue;
+      }
+
+      for (const entry of entries) {
+        const fullPath = joinPath(dir, entry.name);
+        if (entry.type === 'directory') {
+          if (QUICK_OPEN_IGNORED_DIRS.has(entry.name)) continue;
+          stack.push(fullPath);
+          continue;
+        }
+
+        const rel = toRelativePath(fullPath, rootPath);
+        files.push({
+          path: fullPath,
+          rel,
+          name: entry.name,
+          relLower: rel.toLowerCase(),
+          nameLower: entry.name.toLowerCase(),
+        });
+        if (files.length >= QUICK_OPEN_MAX_FILES) break;
+      }
+    }
+
+    files.sort((a, b) => a.rel.localeCompare(b.rel));
+    return files;
+  }, [gw.rpc]);
+
+  const openQuickOpen = useCallback(() => {
+    const rootPath = resolveQuickOpenRoot();
+    setQuickOpenRoot(rootPath);
+    setQuickOpenOpen(true);
+    setQuickOpenQuery('');
+    setQuickOpenSelected(0);
+    setQuickOpenError(null);
+
+    const cached = quickOpenCacheRef.current;
+    if (cached && cached.root === rootPath) {
+      setQuickOpenFiles(cached.files);
+      setQuickOpenLoading(false);
+      return;
+    }
+
+    setQuickOpenLoading(true);
+    const reqId = ++quickOpenRequestRef.current;
+
+    void buildQuickOpenIndex(rootPath)
+      .then((files) => {
+        if (quickOpenRequestRef.current !== reqId) return;
+        quickOpenCacheRef.current = { root: rootPath, files };
+        setQuickOpenFiles(files);
+        if (files.length >= QUICK_OPEN_MAX_FILES) {
+          toast.message(`Quick open indexed first ${QUICK_OPEN_MAX_FILES.toLocaleString()} files`);
+        }
+      })
+      .catch((err) => {
+        if (quickOpenRequestRef.current !== reqId) return;
+        setQuickOpenError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (quickOpenRequestRef.current !== reqId) return;
+        setQuickOpenLoading(false);
+      });
+  }, [buildQuickOpenIndex, resolveQuickOpenRoot]);
+
+  const quickOpenResults = useMemo(() => {
+    const q = quickOpenQuery.trim().toLowerCase();
+    if (!q) return quickOpenFiles.slice(0, QUICK_OPEN_MAX_RESULTS);
+    return quickOpenFiles
+      .map((file) => ({ file, score: scoreQuickOpen(file, q) }))
+      .filter(item => Number.isFinite(item.score))
+      .sort((a, b) => a.score - b.score || a.file.rel.length - b.file.rel.length)
+      .slice(0, QUICK_OPEN_MAX_RESULTS)
+      .map(item => item.file);
+  }, [quickOpenFiles, quickOpenQuery]);
+
+  useEffect(() => {
+    if (!quickOpenOpen) return;
+    const id = requestAnimationFrame(() => quickOpenInputRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [quickOpenOpen]);
+
+  useEffect(() => {
+    setQuickOpenSelected((prev) => {
+      if (quickOpenResults.length === 0) return 0;
+      return Math.min(prev, quickOpenResults.length - 1);
+    });
+  }, [quickOpenResults]);
+
+  const openQuickOpenFile = useCallback((file?: QuickOpenFile) => {
+    if (!file) return;
+    tabState.openFileTab(file.path);
+    setQuickOpenOpen(false);
+    setQuickOpenQuery('');
+  }, [tabState]);
+
   // --- Keyboard shortcuts ---
   const shortcutActions = useMemo(() => ({
     newTab: () => tabState.newChatTab(),
@@ -506,6 +704,7 @@ export default function App() {
     nextTab: () => tabState.nextTab(),
     prevTab: () => tabState.prevTab(),
     focusTabByIndex: (i: number) => tabState.focusTabByIndex(i),
+    openQuickOpen: () => openQuickOpen(),
     toggleFiles: () => setShowFiles(f => !f),
     openSettings: () => handleNavClick('settings'),
     openTerminal: () => tabState.openTerminalTab(),
@@ -532,7 +731,7 @@ export default function App() {
     focusGroupRight: () => { focusInputOnGroupSwitch.current = true; layout.focusGroupDirection('right'); },
     focusGroupUp: () => { focusInputOnGroupSwitch.current = true; layout.focusGroupDirection('up'); },
     focusGroupDown: () => { focusInputOnGroupSwitch.current = true; layout.focusGroupDirection('down'); },
-  }), [tabState, gw, handleNavClick, layout]);
+  }), [tabState, gw, handleNavClick, layout, openQuickOpen]);
 
   const isAgentRunning = useMemo(() => {
     const tab = tabState.activeTab;
@@ -836,6 +1035,83 @@ export default function App() {
             }
           }}
         />
+      )}
+
+      {quickOpenOpen && (
+        <div
+          className="fixed inset-0 z-[120] bg-black/35 backdrop-blur-[1px] flex items-start justify-center pt-20 px-4"
+          onMouseDown={() => setQuickOpenOpen(false)}
+        >
+          <div
+            className="w-full max-w-2xl rounded-xl border border-border bg-popover shadow-2xl overflow-hidden"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="border-b border-border px-3 py-2">
+              <input
+                ref={quickOpenInputRef}
+                value={quickOpenQuery}
+                onChange={(e) => setQuickOpenQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    setQuickOpenSelected((v) => Math.min(v + 1, Math.max(quickOpenResults.length - 1, 0)));
+                    return;
+                  }
+                  if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    setQuickOpenSelected((v) => Math.max(v - 1, 0));
+                    return;
+                  }
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    openQuickOpenFile(quickOpenResults[quickOpenSelected]);
+                    return;
+                  }
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setQuickOpenOpen(false);
+                  }
+                }}
+                placeholder="Type a file name..."
+                className="w-full h-8 px-2 rounded-md bg-background border border-border text-xs text-foreground placeholder:text-muted-foreground outline-none focus:ring-1 focus:ring-primary/40"
+              />
+              <div className="mt-1 text-[10px] text-muted-foreground truncate">
+                root: {quickOpenRoot || '.'}
+              </div>
+            </div>
+
+            <div className="max-h-[420px] overflow-auto p-1">
+              {quickOpenLoading && (
+                <div className="px-2 py-4 text-[11px] text-muted-foreground">Indexing files...</div>
+              )}
+              {!quickOpenLoading && quickOpenError && (
+                <div className="px-2 py-4 text-[11px] text-destructive">Quick open failed: {quickOpenError}</div>
+              )}
+              {!quickOpenLoading && !quickOpenError && quickOpenResults.length === 0 && (
+                <div className="px-2 py-4 text-[11px] text-muted-foreground">
+                  {quickOpenQuery.trim() ? 'No matches' : 'No files indexed'}
+                </div>
+              )}
+              {!quickOpenLoading && !quickOpenError && quickOpenResults.map((file, idx) => (
+                <button
+                  key={file.path}
+                  className={cn(
+                    'w-full text-left px-2 py-1.5 rounded-md transition-colors',
+                    idx === quickOpenSelected
+                      ? 'bg-secondary text-foreground'
+                      : 'text-muted-foreground hover:bg-secondary/50 hover:text-foreground',
+                  )}
+                  onMouseEnter={() => setQuickOpenSelected(idx)}
+                  onClick={() => openQuickOpenFile(file)}
+                >
+                  <div className="text-[11px] truncate">{file.name}</div>
+                  <div className="text-[10px] truncate opacity-80">{file.rel}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* titlebar — pure drag chrome */}

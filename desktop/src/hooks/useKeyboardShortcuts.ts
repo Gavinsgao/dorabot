@@ -6,6 +6,7 @@ type ShortcutActions = {
   nextTab: () => void;
   prevTab: () => void;
   focusTabByIndex: (index: number) => void;
+  openQuickOpen: () => void;
   toggleFiles: () => void;
   openSettings: () => void;
   focusInput: () => void;
@@ -81,6 +82,13 @@ export function useKeyboardShortcuts(actions: ShortcutActions, options: Shortcut
       if (!e.shiftKey && !e.altKey && e.key >= '1' && e.key <= '9') {
         e.preventDefault();
         actions.focusTabByIndex(parseInt(e.key) - 1);
+        return;
+      }
+
+      // Cmd+P — quick open file
+      if (e.key.toLowerCase() === 'p' && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        actions.openQuickOpen();
         return;
       }
 
