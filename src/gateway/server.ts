@@ -1103,7 +1103,8 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
     channel?: string; chatId?: string;
     messageMetadata?: import('../session/manager.js').MessageMetadata;
   }): Promise<void> {
-    const provider = await getProviderByName('claude');
+    const providerName = (config.provider?.name || 'claude') as ProviderName;
+    const provider = await getProviderByName(providerName);
     if (!provider.loginWithOAuth) return;
 
     const { authUrl } = await provider.loginWithOAuth();

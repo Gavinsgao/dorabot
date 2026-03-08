@@ -541,9 +541,19 @@ function scheduleCodexRefresh(tokens: CodexOAuthTokens): void {
       nextRefreshAt = null;
       return;
     }
-    const refreshed = await refreshCodexAccessToken(latest.refresh_token);
+    // Retry refresh up to 3 times with exponential backoff
+    let refreshed: CodexOAuthTokens | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      refreshed = await refreshCodexAccessToken(latest.refresh_token);
+      if (refreshed) break;
+      if (attempt < 2) {
+        const backoff = (attempt + 1) * 5_000;
+        console.log(`[codex] token refresh attempt ${attempt + 1} failed, retrying in ${backoff / 1000}s...`);
+        await new Promise(r => setTimeout(r, backoff));
+      }
+    }
     if (!refreshed) {
-      emitAuthRequired('OAuth refresh failed');
+      emitAuthRequired('OAuth refresh failed after retries');
       nextRefreshAt = null;
       return;
     }
