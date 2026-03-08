@@ -453,6 +453,20 @@ export default function App() {
             playNotifSound();
           }
           break;
+        case 'auth.reauth':
+          toast.error('Session expired, re-authentication needed', {
+            icon: <KeyRound className="w-4 h-4 text-red-400" />,
+            duration: 15000,
+            action: {
+              label: 'Re-authenticate',
+              onClick: () => window.open(event.authUrl, '_blank'),
+            },
+          });
+          if (!windowFocused) {
+            notify('Session expired — re-authentication needed');
+            playNotifSound();
+          }
+          break;
         case 'channel.message': {
           const preview = event.body.length > 80 ? event.body.slice(0, 80) + '...' : event.body;
           const sender = event.senderName || event.senderId;

@@ -167,6 +167,7 @@ export type NotifiableEvent =
   | { type: 'goals.update' }
   | { type: 'research.update' }
   | { type: 'auth.required'; provider: string; reason: string }
+  | { type: 'auth.reauth'; authUrl: string }
   | { type: 'whatsapp.status'; status: string }
   | { type: 'telegram.status'; status: string }
   | { type: 'calendar'; summary: string }
@@ -1252,6 +1253,14 @@ export function useGateway() {
         gatewayClientRef.current.rpc('provider.get').then((res) => {
           setProviderInfo(res as any);
         }).catch(() => {});
+        break;
+      }
+
+      case 'auth.reauth_required': {
+        const d = data as { channel?: string; chatId?: string; authUrl?: string };
+        if (d.authUrl) {
+          onNotifiableEventRef.current?.({ type: 'auth.reauth', authUrl: d.authUrl });
+        }
         break;
       }
 

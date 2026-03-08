@@ -280,9 +280,19 @@ function scheduleTokenRefresh(tokens: OAuthTokens): void {
       nextRefreshAt = null;
       return;
     }
-    const refreshed = await refreshAccessToken(latest.refresh_token);
+    // Retry refresh up to 3 times with exponential backoff
+    let refreshed: OAuthTokens | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      refreshed = await refreshAccessToken(latest.refresh_token);
+      if (refreshed) break;
+      if (attempt < 2) {
+        const backoff = (attempt + 1) * 5_000; // 5s, 10s
+        console.log(`[claude] token refresh attempt ${attempt + 1} failed, retrying in ${backoff / 1000}s...`);
+        await new Promise(r => setTimeout(r, backoff));
+      }
+    }
     if (!refreshed) {
-      emitAuthRequired('OAuth refresh failed');
+      emitAuthRequired('OAuth refresh failed after retries');
       nextRefreshAt = null;
       return;
     }
