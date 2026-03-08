@@ -8,7 +8,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync, chmodSync } from 'n
 import { randomBytes, createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import type { Provider, ProviderRunOptions, ProviderMessage, ProviderAuthStatus, ProviderQueryResult } from './types.js';
-import type { ReasoningEffort } from '../config.js';
+import type { ReasoningEffort, CodexMcpOauthCredentialsStore } from '../config.js';
 import { DORABOT_DIR, CODEX_OAUTH_PATH, OPENAI_KEY_PATH } from '../workspace.js';
 import { getSecretStorageBackend, keychainDelete, keychainLoad, keychainStore, type SecretStorageBackend } from '../auth/keychain.js';
 
@@ -678,6 +678,9 @@ export class CodexProvider implements Provider {
     const codexConfig = opts.config.provider?.codex;
     const model = codexConfig?.model || undefined;
     const reasoningEffort = opts.config.reasoningEffort;
+    // Default to file-backed MCP OAuth credentials to avoid repeated macOS keychain prompts
+    // for "Codex MCP Credentials" during every non-interactive `codex exec` turn.
+    const mcpOauthCredentialsStore = (codexConfig?.mcpOauthCredentialsStore || 'file') as CodexMcpOauthCredentialsStore;
 
     // Resolve API key (managed key > OAuth token > codex auth.json)
     const apiKey = await resolveCodexApiKey();
@@ -686,6 +689,9 @@ export class CodexProvider implements Provider {
     const codex = new Codex({
       apiKey,
       codexPathOverride: codexBinary !== 'codex' ? codexBinary : undefined,
+      config: {
+        mcp_oauth_credentials_store: mcpOauthCredentialsStore,
+      },
     });
 
     // Map reasoning effort

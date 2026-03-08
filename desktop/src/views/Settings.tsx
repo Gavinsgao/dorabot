@@ -470,6 +470,7 @@ function OpenAICard({ gateway, disabled }: { gateway: ReturnType<typeof useGatew
   const sandboxMode = cfg?.provider?.codex?.sandboxMode || 'danger-full-access';
   const approvalPolicy = cfg?.provider?.codex?.approvalPolicy || 'never';
   const webSearch = cfg?.provider?.codex?.webSearch || 'disabled';
+  const mcpOauthCredentialsStore = cfg?.provider?.codex?.mcpOauthCredentialsStore || 'file';
 
   // Query auth independently
   useEffect(() => {
@@ -625,6 +626,20 @@ function OpenAICard({ gateway, disabled }: { gateway: ReturnType<typeof useGatew
                 <SelectItem value="disabled" className="text-[11px]">disabled</SelectItem>
                 <SelectItem value="cached" className="text-[11px]">cached</SelectItem>
                 <SelectItem value="live" className="text-[11px]">live</SelectItem>
+              </SelectContent>
+            </Select>
+          </SettingRow>
+
+          {/* MCP OAuth credential storage */}
+          <SettingRow label="MCP OAuth storage" description="where Codex stores MCP OAuth credentials">
+            <Select value={mcpOauthCredentialsStore} onValueChange={v => set('provider.codex.mcpOauthCredentialsStore', v)} disabled={disabled}>
+              <SelectTrigger className="h-7 w-40 text-[11px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="file" className="text-[11px]">file (recommended)</SelectItem>
+                <SelectItem value="auto" className="text-[11px]">auto</SelectItem>
+                <SelectItem value="keyring" className="text-[11px]">keyring</SelectItem>
               </SelectContent>
             </Select>
           </SettingRow>

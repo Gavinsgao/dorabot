@@ -122,6 +122,7 @@ export type ThinkingMode = 'adaptive' | 'disabled' | { type: 'enabled'; budgetTo
 export type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
 export type CodexApprovalPolicy = 'never' | 'on-request' | 'on-failure' | 'untrusted';
 export type CodexWebSearchMode = 'disabled' | 'cached' | 'live';
+export type CodexMcpOauthCredentialsStore = 'auto' | 'file' | 'keyring';
 
 export type CodexProviderConfig = {
   authMethod?: 'oauth' | 'api_key';
@@ -130,6 +131,7 @@ export type CodexProviderConfig = {
   approvalPolicy?: CodexApprovalPolicy;
   networkAccess?: boolean;
   webSearch?: CodexWebSearchMode;
+  mcpOauthCredentialsStore?: CodexMcpOauthCredentialsStore;
 };
 
 export type ProviderConfig = {

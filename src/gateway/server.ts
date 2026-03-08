@@ -4589,6 +4589,16 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
             return { id, result: { key, value } };
           }
 
+          if (key === 'provider.codex.mcpOauthCredentialsStore' && typeof value === 'string') {
+            const valid = ['auto', 'file', 'keyring'];
+            if (!valid.includes(value)) return { id, error: `mcpOauthCredentialsStore must be one of: ${valid.join(', ')}` };
+            if (!config.provider.codex) config.provider.codex = {};
+            config.provider.codex.mcpOauthCredentialsStore = value as any;
+            saveConfig(config);
+            broadcast({ event: 'config.update', data: { key, value } });
+            return { id, result: { key, value } };
+          }
+
           if (key === 'browser.enabled' && typeof value === 'boolean') {
             if (!config.browser) config.browser = {};
             config.browser.enabled = value;
