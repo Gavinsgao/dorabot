@@ -14,6 +14,8 @@ const SHORTCUTS = [
     { keys: '⌘P', desc: 'Quick open file' },
     { keys: '⌘⇧F', desc: 'Search in files' },
     { keys: '⌘B', desc: 'Toggle file explorer' },
+    { keys: '⌘N', desc: 'New file in explorer selection' },
+    { keys: '⌘⇧N', desc: 'New folder in explorer selection' },
     { keys: '⌘L', desc: 'Focus chat input' },
     { keys: '⌘,', desc: 'Settings' },
   ]},
