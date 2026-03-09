@@ -827,6 +827,12 @@ export function FileExplorer({ rpc, connected, onFileClick, onOpenDiff, onFileCh
 
   const [gitState, setGitState] = useState<GitState | null>(null);
   const gitPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const treeRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  const focusTree = useCallback(() => {
+    treeRef.current?.focus();
+  }, []);
 
   const fetchGitStatus = useCallback(async () => {
     if (!connected || !viewRoot) return;
@@ -910,6 +916,8 @@ export function FileExplorer({ rpc, connected, onFileClick, onOpenDiff, onFileCh
   const navigateTo = useCallback((path: string) => {
     setViewRoot(path);
     setExpanded(new Set());
+    setSelectedPath(null);
+    setInlineInput(null);
     if (!dirs.has(path)) loadDir(path);
   }, [dirs, loadDir]);
 
@@ -926,13 +934,23 @@ export function FileExplorer({ rpc, connected, onFileClick, onOpenDiff, onFileCh
     });
   }, [dirs, loadDir]);
 
+  const getCreationParentPath = useCallback(() => {
+    if (!selectedPath) return viewRoot;
+    const lastSlash = selectedPath.lastIndexOf('/');
+    if (lastSlash <= 0) return viewRoot;
+    const parentPath = selectedPath.slice(0, lastSlash);
+    const entryName = selectedPath.slice(lastSlash + 1);
+    const entry = dirs.get(parentPath)?.entries.find(item => item.name === entryName);
+    return entry?.type === 'directory' ? selectedPath : parentPath;
+  }, [dirs, selectedPath, viewRoot]);
+
   const createFolder = useCallback(() => {
-    setInlineInput({ parentPath: viewRoot, type: 'folder' });
-  }, [viewRoot]);
+    setInlineInput({ parentPath: getCreationParentPath(), type: 'folder' });
+  }, [getCreationParentPath]);
 
   const createFile = useCallback(() => {
-    setInlineInput({ parentPath: viewRoot, type: 'file' });
-  }, [viewRoot]);
+    setInlineInput({ parentPath: getCreationParentPath(), type: 'file' });
+  }, [getCreationParentPath]);
 
   const submitInlineInput = useCallback(async (name: string) => {
     if (!inlineInput || !name.trim()) { setInlineInput(null); return; }
@@ -945,17 +963,24 @@ export function FileExplorer({ rpc, connected, onFileClick, onOpenDiff, onFileCh
         loadDir(parentPath);
         if (selectedPath === inlineInput.originalPath) setSelectedPath(newPath);
       } else if (inlineInput.type === 'folder') {
-        await rpc('fs.mkdir', { path: inlineInput.parentPath + '/' + trimmed });
+        const newPath = inlineInput.parentPath + '/' + trimmed;
+        await rpc('fs.mkdir', { path: newPath });
+        setExpanded(prev => new Set(prev).add(inlineInput.parentPath));
         loadDir(inlineInput.parentPath);
+        setSelectedPath(newPath);
       } else {
-        await rpc('fs.write', { path: inlineInput.parentPath + '/' + trimmed, content: '' });
+        const newPath = inlineInput.parentPath + '/' + trimmed;
+        await rpc('fs.write', { path: newPath, content: '' });
+        setExpanded(prev => new Set(prev).add(inlineInput.parentPath));
         loadDir(inlineInput.parentPath);
+        setSelectedPath(newPath);
       }
     } catch (err) {
       toast(String(err), 'error');
     }
     setInlineInput(null);
-  }, [inlineInput, rpc, loadDir, selectedPath]);
+    focusTree();
+  }, [focusTree, inlineInput, rpc, loadDir, selectedPath]);
 
   const deleteItem = useCallback((path: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -1007,8 +1032,6 @@ export function FileExplorer({ rpc, connected, onFileClick, onOpenDiff, onFileCh
     return result;
   }, [dirs, expanded, viewRoot]);
 
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-
   // Scroll a path's element into view (uses data-path attribute lookup via iteration, not CSS selectors)
   const scrollPathIntoView = useCallback((path: string) => {
     const container = scrollContainerRef.current;
@@ -1025,6 +1048,31 @@ export function FileExplorer({ rpc, connected, onFileClick, onOpenDiff, onFileCh
   const handleTreeKeyDown = useCallback((e: React.KeyboardEvent) => {
     // Don't handle if focus is on an input/textarea
     if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
+
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && e.key.toLowerCase() === 'n') {
+      e.preventDefault();
+      if (e.shiftKey) createFolder();
+      else createFile();
+      return;
+    }
+
+    // Cmd+Right: navigate into selected folder, Cmd+Left: navigate up
+    if (mod && e.key === 'ArrowRight') {
+      e.preventDefault();
+      if (selectedPath) {
+        const visible = getVisiblePaths();
+        const item = visible.find(v => v.path === selectedPath);
+        if (item?.isDir) navigateTo(item.path);
+      }
+      return;
+    }
+    if (mod && e.key === 'ArrowLeft') {
+      e.preventDefault();
+      const parentDir = viewRoot.substring(0, viewRoot.lastIndexOf('/'));
+      if (parentDir) navigateTo(parentDir);
+      return;
+    }
 
     const visible = getVisiblePaths();
     if (visible.length === 0) return;
@@ -1097,14 +1145,14 @@ export function FileExplorer({ rpc, connected, onFileClick, onOpenDiff, onFileCh
         if (currentIdx < 0) break;
         const item = visible[currentIdx];
         if (item.isDir) {
-          toggleDir(item.path);
+          navigateTo(item.path);
         } else {
           handleFileClick(item.path);
         }
         break;
       }
     }
-  }, [getVisiblePaths, selectedPath, expanded, toggleDir, handleFileClick, navigateTo, viewRoot, scrollPathIntoView]);
+  }, [createFile, createFolder, getVisiblePaths, selectedPath, expanded, toggleDir, handleFileClick, navigateTo, viewRoot, scrollPathIntoView]);
 
   // ── Context menu dismiss ──────────────────────────────────────
   useEffect(() => {
@@ -1124,16 +1172,20 @@ export function FileExplorer({ rpc, connected, onFileClick, onOpenDiff, onFileCh
   const handleContextMenu = useCallback((e: React.MouseEvent, path: string, isDir: boolean) => {
     e.preventDefault();
     e.stopPropagation();
+    setSelectedPath(path);
+    focusTree();
     setContextMenu({ x: e.clientX, y: e.clientY, path, isDir });
-  }, []);
+  }, [focusTree]);
 
   const handleBlankAreaContextMenu = useCallback((e: React.MouseEvent) => {
     // Only fire if the click target is the container itself (blank area)
     if (e.target === e.currentTarget || (e.target as HTMLElement).closest('[data-file-entry]') === null) {
       e.preventDefault();
+      setSelectedPath(null);
+      focusTree();
       setContextMenu({ x: e.clientX, y: e.clientY, path: viewRoot, isDir: true });
     }
-  }, [viewRoot]);
+  }, [focusTree, viewRoot]);
 
   const ctxCopyPath = useCallback((path: string) => {
     navigator.clipboard.writeText(path).catch(() => {});
@@ -1238,12 +1290,26 @@ export function FileExplorer({ rpc, connected, onFileClick, onOpenDiff, onFileCh
             selectedPath === fullPath ? 'bg-secondary text-foreground' : 'text-muted-foreground hover:bg-secondary/50 hover:text-foreground'
           )}
           style={{ paddingLeft: Math.min(depth * 16, 128) + 12 }}
-          onClick={isDir ? () => toggleDir(fullPath) : () => handleFileClick(fullPath)}
+          onClick={() => {
+            setSelectedPath(fullPath);
+            focusTree();
+            if (!isDir) handleFileClick(fullPath);
+          }}
           onDoubleClick={isDir ? () => navigateTo(fullPath) : undefined}
           onContextMenu={(e) => handleContextMenu(e, fullPath, isDir)}
         >
           {isDir ? (
-            isExpanded2 ? <ChevronDown className="w-3 h-3 shrink-0" /> : <ChevronRight className="w-3 h-3 shrink-0" />
+            <button
+              className="shrink-0 rounded-sm hover:bg-secondary/60"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedPath(fullPath);
+                focusTree();
+                toggleDir(fullPath);
+              }}
+            >
+              {isExpanded2 ? <ChevronDown className="w-3 h-3 shrink-0" /> : <ChevronRight className="w-3 h-3 shrink-0" />}
+            </button>
           ) : (
             <span className="w-3 shrink-0" />
           )}
@@ -1283,25 +1349,9 @@ export function FileExplorer({ rpc, connected, onFileClick, onOpenDiff, onFileCh
   const crumbs = viewRoot ? buildCrumbs(homeCwd, viewRoot) : [];
 
   return (
-    <div className="flex flex-col h-full min-h-0">
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-border shrink-0">
-        <span className="text-xs font-semibold">files</span>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={createFile}>
-              <FilePlus className="w-3 h-3" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="text-[10px]">New File</TooltipContent>
-        </Tooltip>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="sm" className="h-5 w-5 p-0" onClick={createFolder}>
-              <FolderPlus className="w-3 h-3" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" className="text-[10px]">New Folder</TooltipContent>
-        </Tooltip>
+    <div className="flex flex-col h-full min-h-0 border border-transparent focus-within:border-primary/60 focus-within:ring-1 focus-within:ring-primary/35">
+      <div className="group/explorer-header flex items-center gap-1 px-3 py-2 border-b border-border shrink-0">
+        <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground shrink-0">Explorer</span>
         <div className="flex items-center gap-0.5 text-[10px] text-muted-foreground flex-1 min-w-0 overflow-hidden ml-1">
           {crumbs.map((c, i) => (
             <span key={c.path} className="flex items-center gap-0.5 shrink min-w-0">
@@ -1316,6 +1366,22 @@ export function FileExplorer({ rpc, connected, onFileClick, onOpenDiff, onFileCh
             </span>
           ))}
         </div>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground shrink-0 opacity-0 group-hover/explorer-header:opacity-100 hover:text-foreground hover:bg-accent transition-all" onClick={createFile}>
+              <FilePlus className="w-3.5 h-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="text-[10px]">New File</TooltipContent>
+        </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground shrink-0 opacity-0 group-hover/explorer-header:opacity-100 hover:text-foreground hover:bg-accent transition-all" onClick={createFolder}>
+              <FolderPlus className="w-3.5 h-3.5" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="text-[10px]">New Folder</TooltipContent>
+        </Tooltip>
       </div>
       <div className="flex items-center gap-1 px-2 py-1 border-b border-border shrink-0">
         <Search className="w-3 h-3 text-muted-foreground shrink-0" />
@@ -1333,11 +1399,15 @@ export function FileExplorer({ rpc, connected, onFileClick, onOpenDiff, onFileCh
       </div>
       <ScrollArea className="flex-1 min-h-0">
         <div
-          ref={scrollContainerRef}
+          ref={(node) => {
+            treeRef.current = node;
+            scrollContainerRef.current = node;
+          }}
           className="py-1 min-h-full outline-none"
           tabIndex={0}
           onKeyDown={handleTreeKeyDown}
           onContextMenu={handleBlankAreaContextMenu}
+          onMouseDown={() => focusTree()}
         >
           {viewRoot ? renderEntries(viewRoot, 0) : <div className="text-[11px] text-muted-foreground p-3">loading...</div>}
           {/* Inline input for new file/folder/rename */}
