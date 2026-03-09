@@ -13,7 +13,7 @@ function setNestedKey(obj: Record<string, unknown>, key: string, value: unknown)
 
 // strip mcp__<server>__ prefix from SDK tool names
 function cleanToolName(name: string): string {
-  if (!name.startsWith('mcp__')) return name;
+  if (!name || !name.startsWith('mcp__')) return name || 'unknown';
   const idx = name.indexOf('__', 5);
   return idx >= 0 ? name.slice(idx + 2) : name;
 }
