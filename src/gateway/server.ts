@@ -5608,8 +5608,14 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
           if (!searchPath || !query) return { id, error: 'path and query required' };
           try {
             const { execFileSync } = await import('node:child_process');
+            const { createRequire } = await import('node:module');
+            const { join, dirname } = await import('node:path');
+            const { arch, platform } = await import('node:process');
+            const require = createRequire(import.meta.url);
+            const sdkDir = dirname(require.resolve('@anthropic-ai/claude-agent-sdk/package.json'));
+            const rgBin = join(sdkDir, 'vendor', 'ripgrep', `${arch}-${platform}`, 'rg');
             const args = ['--json', '--max-count', '3', '-m', String(maxResults), '-i', query, resolve(searchPath)];
-            const raw = execFileSync('rg', args, { encoding: 'utf-8', timeout: 10000, maxBuffer: 5 * 1024 * 1024 });
+            const raw = execFileSync(rgBin, args, { encoding: 'utf-8', timeout: 10000, maxBuffer: 5 * 1024 * 1024 });
             const results: { path: string; line: number; text: string }[] = [];
             for (const line of raw.split('\n')) {
               if (!line) continue;
