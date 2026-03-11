@@ -3567,6 +3567,15 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
           return { id, result: tasks.tasks };
         }
 
+        case 'tasks.view': {
+          const taskId = params?.id as string;
+          if (!taskId) return { id, error: 'id required' };
+          const tasks = loadTasks();
+          const task = tasks.tasks.find(t => t.id === taskId);
+          if (!task) return { id, error: 'task not found' };
+          return { id, result: task };
+        }
+
         case 'tasks.add': {
           const title = (params?.title as string || '').trim();
           if (!title) return { id, error: 'title required' };

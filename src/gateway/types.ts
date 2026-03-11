@@ -116,6 +116,7 @@ export type RpcMethod =
   | 'projects.update'
   | 'projects.delete'
   | 'tasks.list'
+  | 'tasks.view'
   | 'tasks.add'
   | 'tasks.update'
   | 'tasks.delete'
