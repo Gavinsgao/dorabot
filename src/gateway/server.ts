@@ -3698,7 +3698,13 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
 
         case 'research.list': {
           const research = loadResearch();
-          return { id, result: research.items };
+          const withPreviews = research.items.map(item => {
+            const raw = readResearchContent(item.filePath);
+            // strip markdown headers/formatting for a clean preview
+            const plain = raw.replace(/^#{1,6}\s+.*$/gm, '').replace(/[*_`~\[\]]/g, '').replace(/\n+/g, ' ').trim();
+            return { ...item, preview: plain.slice(0, 200) };
+          });
+          return { id, result: withPreviews };
         }
 
         case 'research.read': {
