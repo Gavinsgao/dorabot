@@ -5,7 +5,7 @@ import type { Config } from '../config.js';
 
 const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
-// hook event types (matching Claude SDK)
+// hook event types (matching Claude SDK v0.2.80)
 export type HookEvent =
   | 'PreToolUse'
   | 'PostToolUse'
@@ -18,7 +18,16 @@ export type HookEvent =
   | 'SubagentStart'
   | 'SubagentStop'
   | 'PreCompact'
-  | 'PermissionRequest';
+  | 'PermissionRequest'
+  | 'Setup'
+  | 'TeammateIdle'
+  | 'TaskCompleted'
+  | 'ConfigChange'
+  | 'Elicitation'
+  | 'ElicitationResult'
+  | 'WorktreeCreate'
+  | 'WorktreeRemove'
+  | 'InstructionsLoaded';
 
 export type BaseHookInput = {
   session_id: string;
@@ -31,6 +40,8 @@ export type PreToolUseHookInput = BaseHookInput & {
   hook_event_name: 'PreToolUse';
   tool_name: string;
   tool_input: unknown;
+  agent_id?: string;
+  agent_type?: string;
 };
 
 export type PostToolUseHookInput = BaseHookInput & {
@@ -38,6 +49,8 @@ export type PostToolUseHookInput = BaseHookInput & {
   tool_name: string;
   tool_input: unknown;
   tool_response: unknown;
+  agent_id?: string;
+  agent_type?: string;
 };
 
 export type SessionStartHookInput = BaseHookInput & {
@@ -61,13 +74,82 @@ export type SubagentStopHookInput = BaseHookInput & {
   stop_hook_active: boolean;
 };
 
+export type SetupHookInput = BaseHookInput & {
+  hook_event_name: 'Setup';
+};
+
+export type TeammateIdleHookInput = BaseHookInput & {
+  hook_event_name: 'TeammateIdle';
+  agent_id: string;
+};
+
+export type TaskCompletedHookInput = BaseHookInput & {
+  hook_event_name: 'TaskCompleted';
+  task_id: string;
+  tool_use_id: string;
+};
+
+export type ConfigChangeHookInput = BaseHookInput & {
+  hook_event_name: 'ConfigChange';
+  key: string;
+  value: unknown;
+};
+
+export type ElicitationHookInput = BaseHookInput & {
+  hook_event_name: 'Elicitation';
+  elicitation_id: string;
+  message: string;
+  fields: ElicitationField[];
+};
+
+export type ElicitationField = {
+  name: string;
+  type: 'text' | 'select' | 'boolean' | 'number';
+  label: string;
+  description?: string;
+  required?: boolean;
+  options?: { value: string; label: string }[];
+  default_value?: unknown;
+};
+
+export type ElicitationResultHookInput = BaseHookInput & {
+  hook_event_name: 'ElicitationResult';
+  elicitation_id: string;
+  values: Record<string, unknown>;
+};
+
+export type WorktreeCreateHookInput = BaseHookInput & {
+  hook_event_name: 'WorktreeCreate';
+  worktree_path: string;
+  branch: string;
+};
+
+export type WorktreeRemoveHookInput = BaseHookInput & {
+  hook_event_name: 'WorktreeRemove';
+  worktree_path: string;
+};
+
+export type InstructionsLoadedHookInput = BaseHookInput & {
+  hook_event_name: 'InstructionsLoaded';
+  files: string[];
+};
+
 export type HookInput =
   | PreToolUseHookInput
   | PostToolUseHookInput
   | SessionStartHookInput
   | SessionEndHookInput
   | SubagentStartHookInput
-  | SubagentStopHookInput;
+  | SubagentStopHookInput
+  | SetupHookInput
+  | TeammateIdleHookInput
+  | TaskCompletedHookInput
+  | ConfigChangeHookInput
+  | ElicitationHookInput
+  | ElicitationResultHookInput
+  | WorktreeCreateHookInput
+  | WorktreeRemoveHookInput
+  | InstructionsLoadedHookInput;
 
 export type HookJSONOutput = {
   continue?: boolean;

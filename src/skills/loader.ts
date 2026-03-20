@@ -12,13 +12,24 @@ export type SkillMetadata = {
   };
 };
 
+export type SkillFile = {
+  /** Relative path from skill directory (e.g. "references/commands.md") */
+  relativePath: string;
+  /** Size in bytes */
+  size: number;
+};
+
 export type Skill = {
   name: string;
   description: string;
   content: string;
   path: string;
+  /** The skill's root directory (parent of SKILL.md) */
+  dir: string;
   userInvocable: boolean;
   metadata: SkillMetadata;
+  /** All files in the skill directory except SKILL.md */
+  files: SkillFile[];
 };
 
 export type SkillEligibility = {
@@ -81,10 +92,27 @@ export function checkSkillEligibility(skill: Skill, config: Config): SkillEligib
   };
 }
 
+/** Recursively collect all files in a directory, returning paths relative to root */
+function collectFiles(dir: string, root: string): SkillFile[] {
+  if (!existsSync(dir)) return [];
+  const files: SkillFile[] = [];
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    const stat = statSync(full);
+    if (stat.isDirectory()) {
+      files.push(...collectFiles(full, root));
+    } else {
+      const rel = full.slice(root.length + 1); // strip root + separator
+      files.push({ relativePath: rel, size: stat.size });
+    }
+  }
+  return files;
+}
+
 export function loadSkill(skillPath: string): Skill | null {
-  const skillMdPath = skillPath.endsWith('.md')
-    ? skillPath
-    : join(skillPath, 'SKILL.md');
+  const isFile = skillPath.endsWith('.md');
+  const skillMdPath = isFile ? skillPath : join(skillPath, 'SKILL.md');
+  const skillDir = isFile ? dirname(skillPath) : skillPath;
 
   if (!existsSync(skillMdPath)) {
     return null;
@@ -94,18 +122,24 @@ export function loadSkill(skillPath: string): Skill | null {
     const content = readFileSync(skillMdPath, 'utf-8');
     const { data, content: body } = matter(content);
 
-    const name = data.name || basename(dirname(skillMdPath));
+    const name = data.name || basename(skillDir);
     const description = data.description || '';
     const userInvocable = data['user-invocable'] !== false;
     const metadata: SkillMetadata = data.metadata || {};
+
+    // collect all files in the skill directory except SKILL.md itself
+    const allFiles = isFile ? [] : collectFiles(skillDir, skillDir)
+      .filter(f => f.relativePath !== 'SKILL.md');
 
     return {
       name,
       description,
       content: body.trim(),
       path: skillMdPath,
+      dir: skillDir,
       userInvocable,
       metadata,
+      files: allFiles,
     };
   } catch (err) {
     console.error(`Failed to load skill from ${skillMdPath}:`, err);

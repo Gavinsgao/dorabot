@@ -136,7 +136,10 @@ export type RpcMethod =
   | 'agent.run_background'
   | 'agent.background_runs'
   | 'sessions.subscribe'
-  | 'sessions.unsubscribe';
+  | 'sessions.unsubscribe'
+  | 'sessions.fork'
+  | 'sessions.tag'
+  | 'sessions.rename';
 
 export type GatewayEventName =
   | 'agent.stream'
@@ -148,6 +151,14 @@ export type GatewayEventName =
   | 'agent.ask_user'
   | 'agent.question_state'
   | 'agent.user_message'
+  | 'agent.task_started'
+  | 'agent.task_progress'
+  | 'agent.task_notification'
+  | 'agent.elicitation'
+  | 'agent.elicitation_result'
+  | 'agent.worktree_created'
+  | 'agent.worktree_removed'
+  | 'agent.hook'
   | 'channel.message'
   | 'channel.status'
   | 'channel.reply'
@@ -168,6 +179,20 @@ export type GatewayEventName =
   | 'session.snapshot'
   | 'gateway.telemetry';
 
+export type TaskProgress = {
+  taskId: string;
+  toolUseId: string;
+  agentType?: string;
+  description?: string;
+  toolCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+  summary?: string;
+  status: 'running' | 'completed' | 'failed';
+  updatedAt: number;
+};
+
 export type SessionSnapshot = {
   sessionKey: string;
   status: 'idle' | 'thinking' | 'tool_use' | 'responding';
@@ -182,6 +207,17 @@ export type SessionSnapshot = {
   pendingQuestion: { requestId: string; questions: unknown[]; timestamp: number } | null;
   pendingQuestionStatus: 'pending' | 'answered' | 'timeout' | 'cancelled' | null;
   pendingQuestionUpdatedAt: number | null;
+  /** Active subagent task progress, keyed by taskId */
+  taskProgress: Record<string, TaskProgress>;
+  /** Active worktrees created by the agent */
+  activeWorktrees: { path: string; branch: string }[];
+  /** Pending elicitation (structured question) from agent */
+  pendingElicitation: {
+    elicitationId: string;
+    message: string;
+    fields: import('../hooks/index.js').ElicitationField[];
+    timestamp: number;
+  } | null;
   updatedAt: number;
 };
 

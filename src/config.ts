@@ -175,6 +175,12 @@ export type Config = {
   userTimezone?: string;
   sessionDir: string;
   cwd: string;
+  /** Beta features to enable (e.g. "context-1m-2025-08-07" for 1M context) */
+  betas?: string[];
+  /** Control which settings/instruction sources the SDK loads (e.g. ["project"] for CLAUDE.md) */
+  settingSources?: string[];
+  /** Enable AI-generated progress summaries for subagent tasks */
+  agentProgressSummaries?: boolean;
 };
 
 const DEFAULT_CONFIG: Config = {
