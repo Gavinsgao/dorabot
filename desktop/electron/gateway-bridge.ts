@@ -2,17 +2,30 @@
  * Gateway WebSocket bridge - runs in the main process.
  * Connects to the local gateway over a Unix domain socket and relays
  * messages to/from renderer via IPC.
+ *
+ * Includes HTTP auth fallback: when WebSocket is down, the bridge checks
+ * the HTTP auth server to determine if provider auth is still valid.
+ * This prevents the "Not authenticated" flicker during brief disconnects.
  */
 import WebSocket from 'ws';
 import { createConnection } from 'node:net';
 import { readFileSync, existsSync, appendFileSync } from 'fs';
 import { BrowserWindow } from 'electron';
 import { GATEWAY_TOKEN_PATH, GATEWAY_LOG_PATH, GATEWAY_SOCKET_PATH } from './dorabot-paths';
+import { httpAuthHealthCheck, httpAuthStatus, isHttpAuthAvailable, type AuthStatusResult } from './http-auth-client';
 
 const HEARTBEAT_INTERVAL_MS = 10_000;
 const HEARTBEAT_TIMEOUT_MS = 5_000;
 
-export type BridgeState = 'connecting' | 'connected' | 'authenticated' | 'disconnected';
+/**
+ * Connection states:
+ * - connecting: WebSocket handshake in progress
+ * - connected: WS open, gateway auth in progress
+ * - authenticated: WS open + gateway auth complete (fully operational)
+ * - degraded: WS down, but HTTP auth server is reachable (auth still works)
+ * - disconnected: both WS and HTTP are down
+ */
+export type BridgeState = 'connecting' | 'connected' | 'authenticated' | 'degraded' | 'disconnected';
 
 export class GatewayBridge {
   private ws: WebSocket | null = null;
@@ -30,6 +43,8 @@ export class GatewayBridge {
   private socketPath: string;
   private connectId: string | undefined;
   private lastReason: string | undefined;
+  /** Last known auth status from HTTP fallback (survives WS drops) */
+  private lastAuthStatus: AuthStatusResult | null = null;
 
   constructor(url = 'ws://localhost', socketPath = GATEWAY_SOCKET_PATH) {
     this.url = url;
@@ -78,8 +93,23 @@ export class GatewayBridge {
     }
   }
 
-  getState(): { state: BridgeState; reconnectCount: number; connectId?: string; lastReason?: string } {
-    return { state: this.state, reconnectCount: this.reconnectCount, connectId: this.connectId, lastReason: this.lastReason };
+  getState(): { state: BridgeState; reconnectCount: number; connectId?: string; lastReason?: string; lastAuthStatus?: AuthStatusResult | null } {
+    return { state: this.state, reconnectCount: this.reconnectCount, connectId: this.connectId, lastReason: this.lastReason, lastAuthStatus: this.lastAuthStatus };
+  }
+
+  /** Get cached auth status (available even when WS is down). */
+  getLastAuthStatus(): AuthStatusResult | null {
+    return this.lastAuthStatus;
+  }
+
+  /** Fetch auth status via HTTP fallback (works even when WS is down). */
+  async fetchAuthStatusHttp(provider = 'claude'): Promise<AuthStatusResult | null> {
+    const result = await httpAuthStatus(provider);
+    if (result.ok) {
+      this.lastAuthStatus = result.data;
+      return result.data;
+    }
+    return null;
   }
 
   private openSocket(): void {
@@ -130,14 +160,53 @@ export class GatewayBridge {
       const rawReason = reason.toString().trim();
       const reasonStr = rawReason || (code === 1005 || code === 1006 ? 'connection_lost' : `ws_close_${code}`);
       this.log(`WebSocket closed: code=${code} reason=${reasonStr}`);
-      this.setState('disconnected', reasonStr);
-      if (!this.manuallyClosed) this.scheduleReconnect(reasonStr);
+
+      // Before marking as disconnected, check HTTP fallback
+      this.checkHttpFallback(reasonStr);
     });
 
     ws.on('error', (err) => {
       this.log(`WebSocket error: ${err.message}`);
       try { ws.close(); } catch {}
     });
+  }
+
+  /**
+   * When WS drops, check if HTTP auth server is still reachable.
+   * If yes, enter DEGRADED state (auth still works) instead of DISCONNECTED.
+   */
+  private async checkHttpFallback(reason: string): Promise<void> {
+    if (this.manuallyClosed) {
+      this.setState('disconnected', reason);
+      return;
+    }
+
+    // Quick HTTP health check (3s timeout)
+    if (isHttpAuthAvailable()) {
+      try {
+        const healthy = await httpAuthHealthCheck();
+        if (healthy) {
+          // Gateway process is alive, WS just dropped. Enter degraded mode.
+          this.log('WS down but HTTP auth server reachable, entering degraded mode');
+          this.setState('degraded', reason);
+
+          // Fetch latest auth status via HTTP and cache it locally
+          const status = await httpAuthStatus();
+          if (status.ok) {
+            this.lastAuthStatus = status.data;
+          }
+
+          // Still schedule WS reconnect
+          this.scheduleReconnect(reason);
+          return;
+        }
+      } catch {
+        // HTTP also down, fall through to disconnected
+      }
+    }
+
+    this.setState('disconnected', reason);
+    if (!this.manuallyClosed) this.scheduleReconnect(reason);
   }
 
   private authenticate(ws: WebSocket): void {
@@ -224,12 +293,29 @@ export class GatewayBridge {
 
   private scheduleReconnect(reason: string): void {
     if (this.manuallyClosed || this.reconnectTimer !== null) return;
+    // Stop retrying after 30 attempts (roughly 5 minutes of backoff)
+    if (this.reconnectAttempt >= 30) {
+      this.setState('disconnected', 'Connection failed after multiple attempts. Restart the app to try again.');
+      return;
+    }
     const base = Math.min(1000 * (2 ** Math.min(this.reconnectAttempt, 3)), 10_000);
     const jitter = Math.floor(Math.random() * 250);
     const delay = base + jitter;
     this.reconnectAttempt += 1;
     this.reconnectCount += 1;
-    this.setState('disconnected', reason, delay);
+    // Don't overwrite state if we're in degraded mode (HTTP still works)
+    if (this.state !== 'degraded') {
+      this.setState('disconnected', reason, delay);
+    } else {
+      // Still send reconnect timing to renderer without changing state
+      this.sendToRenderer('gateway:state', {
+        state: 'degraded',
+        reason,
+        reconnectInMs: delay,
+        reconnectCount: this.reconnectCount,
+        connectId: this.connectId,
+      });
+    }
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.openSocket();

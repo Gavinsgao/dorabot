@@ -1,4 +1,4 @@
-export type GatewayConnectionState = 'connecting' | 'connected' | 'disconnected';
+export type GatewayConnectionState = 'connecting' | 'connected' | 'degraded' | 'disconnected';
 
 type GatewayEventPayload = {
   event: string;
@@ -57,9 +57,12 @@ export class GatewayClient {
 
       // Map bridge states to client states
       // Bridge uses 'authenticated' for fully connected, we use 'connected'
+      // Bridge uses 'degraded' when WS is down but HTTP auth server is reachable
       let clientState: GatewayConnectionState;
       if (bridgeState === 'authenticated') {
         clientState = 'connected';
+      } else if (bridgeState === 'degraded') {
+        clientState = 'degraded';
       } else if (bridgeState === 'connected' || bridgeState === 'connecting') {
         clientState = 'connecting';
       } else {
@@ -122,6 +125,7 @@ export class GatewayClient {
 
       let clientState: GatewayConnectionState;
       if (state.state === 'authenticated') clientState = 'connected';
+      else if (state.state === 'degraded') clientState = 'degraded';
       else if (state.state === 'connected' || state.state === 'connecting') clientState = 'connecting';
       else clientState = 'disconnected';
 

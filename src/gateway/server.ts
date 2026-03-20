@@ -1,10 +1,12 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { createServer } from 'node:http';
-import { readdirSync, statSync, readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, renameSync, chmodSync, unlinkSync, watch, type FSWatcher } from 'node:fs';
+import { readdirSync, statSync, readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, renameSync, chmodSync, unlinkSync, realpathSync, cpSync, createWriteStream, watch, type FSWatcher } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
+import { pipeline } from 'node:stream/promises';
 import * as nodePty from 'node-pty';
-import { resolve as pathResolve, join, dirname } from 'node:path';
-import { homedir } from 'node:os';
+import { resolve as pathResolve, join, dirname, sep } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { execSync } from 'node:child_process';
 import { createConnection } from 'node:net';
 
 const resolve = (p: string) => pathResolve(p.startsWith('~') ? p.replace('~', homedir()) : p);
@@ -42,6 +44,8 @@ import { isClaudeInstalled, hasOAuthTokens, getApiKey as getClaudeApiKey, onClau
 import { isCodexInstalled, hasCodexAuth, onCodexAuthRequired } from '../providers/codex.js';
 import type { ProviderName } from '../config.js';
 import { buildProviderAuthGate, classifyAuthRecovery, type ProviderAuthGate } from './auth-state.js';
+import { startHttpAuthServer, type HttpAuthServer } from './http-auth-server.js';
+import { setCachedAuth, flushAuthCache } from '../providers/auth-cache.js';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { classifyToolCall, cleanToolName, isToolAllowed, type Tier } from './tool-policy.js';
 import { AUTONOMOUS_SCHEDULE_ID, buildAutonomousCalendarItem, PULSE_INTERVALS, DEFAULT_PULSE_INTERVAL, pulseIntervalToRrule, rruleToPulseInterval } from '../autonomous.js';
@@ -256,6 +260,8 @@ export type Gateway = {
   channelManager: ChannelManager;
   scheduler: SchedulerRunner | null;
   context: GatewayContext;
+  /** HTTP auth fallback server port (0 if not started) */
+  httpAuthPort: number;
 };
 
 export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
@@ -2086,13 +2092,31 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
   async function getProviderAuthGate(providerName = ((config.provider?.name || 'claude') as ProviderName)): Promise<ProviderAuthGate> {
     const provider = await getProviderByName(providerName);
     const status = await provider.getAuthStatus();
-    return buildProviderAuthGate(providerName, status);
+    const gate = buildProviderAuthGate(providerName, status);
+    // Keep auth cache warm on every status check
+    setCachedAuth(providerName, {
+      authenticated: gate.authenticated,
+      method: gate.method,
+      identity: status.identity,
+      error: gate.error,
+    }, gate.method === 'oauth' && status.nextRefreshAt
+      ? Math.max(status.nextRefreshAt - Date.now(), 60_000)
+      : undefined);
+    return gate;
   }
 
   async function refreshProviderAuthGate(providerName: ProviderName): Promise<ProviderAuthGate> {
     const provider = await getProviderByName(providerName);
     await provider.invalidateAuthCache?.();
-    return buildProviderAuthGate(providerName, await provider.getAuthStatus());
+    const status = await provider.getAuthStatus();
+    const gate = buildProviderAuthGate(providerName, status);
+    setCachedAuth(providerName, {
+      authenticated: gate.authenticated,
+      method: gate.method,
+      identity: status.identity,
+      error: gate.error,
+    });
+    return gate;
   }
 
   async function handleAgentRun(params: {
@@ -2156,6 +2180,9 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
         pendingApproval: null, pendingQuestion: null,
         pendingQuestionStatus: null,
         pendingQuestionUpdatedAt: null,
+        taskProgress: {},
+        activeWorktrees: [],
+        pendingElicitation: null,
         updatedAt: Date.now(),
       });
       broadcastStatus(sessionKey, 'thinking');
@@ -2280,6 +2307,127 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
             agentSessionId = m.session_id as string;
             sessionRegistry.setSdkSessionId(sessionKey, agentSessionId);
             fileSessionManager.setMetadata(session?.sessionId || '', { sdkSessionId: agentSessionId });
+          }
+
+          // ── SDK task system messages (subagent progress) ──────────────
+          if (m.type === 'system' && m.subtype === 'task_started') {
+            const taskId = m.task_id as string;
+            const toolUseId = m.tool_use_id as string;
+            const snap = sessionSnapshots.get(sessionKey);
+            if (snap) {
+              snap.taskProgress[taskId] = {
+                taskId, toolUseId, status: 'running',
+                toolCount: 0, inputTokens: 0, outputTokens: 0, durationMs: 0,
+                updatedAt: Date.now(),
+              };
+              snap.updatedAt = Date.now();
+            }
+            broadcast({
+              event: 'agent.task_started',
+              data: { sessionKey, taskId, toolUseId, timestamp: Date.now() },
+            });
+          }
+
+          if (m.type === 'system' && m.subtype === 'task_progress') {
+            const taskId = m.task_id as string;
+            const usage = m.usage as Record<string, number> | undefined;
+            const summary = m.summary as string | undefined;
+            const snap = sessionSnapshots.get(sessionKey);
+            if (snap?.taskProgress[taskId]) {
+              const tp = snap.taskProgress[taskId];
+              tp.toolCount = (m.tool_count as number) || tp.toolCount;
+              tp.inputTokens = usage?.input_tokens || tp.inputTokens;
+              tp.outputTokens = usage?.output_tokens || tp.outputTokens;
+              tp.durationMs = (m.duration_ms as number) || tp.durationMs;
+              if (summary) tp.summary = summary;
+              tp.updatedAt = Date.now();
+              snap.updatedAt = Date.now();
+            }
+            broadcast({
+              event: 'agent.task_progress',
+              data: {
+                sessionKey, taskId,
+                toolCount: m.tool_count, inputTokens: usage?.input_tokens,
+                outputTokens: usage?.output_tokens, durationMs: m.duration_ms,
+                summary, timestamp: Date.now(),
+              },
+            });
+          }
+
+          if (m.type === 'system' && m.subtype === 'task_notification') {
+            const taskId = m.task_id as string;
+            const toolUseId = m.tool_use_id as string;
+            const snap = sessionSnapshots.get(sessionKey);
+            if (snap?.taskProgress[taskId]) {
+              snap.taskProgress[taskId].status = 'completed';
+              snap.taskProgress[taskId].updatedAt = Date.now();
+              snap.updatedAt = Date.now();
+            }
+            broadcast({
+              event: 'agent.task_notification',
+              data: { sessionKey, taskId, toolUseId, timestamp: Date.now() },
+            });
+          }
+
+          // ── Elicitation events ──────────────────────────────────────────
+          if (m.type === 'system' && m.subtype === 'elicitation') {
+            const snap = sessionSnapshots.get(sessionKey);
+            if (snap) {
+              snap.pendingElicitation = {
+                elicitationId: m.elicitation_id as string,
+                message: m.message as string,
+                fields: m.fields as any[],
+                timestamp: Date.now(),
+              };
+              snap.updatedAt = Date.now();
+            }
+            broadcast({
+              event: 'agent.elicitation',
+              data: {
+                sessionKey,
+                elicitationId: m.elicitation_id,
+                message: m.message,
+                fields: m.fields,
+                timestamp: Date.now(),
+              },
+            });
+          }
+
+          if (m.type === 'system' && m.subtype === 'elicitation_result') {
+            const snap = sessionSnapshots.get(sessionKey);
+            if (snap) {
+              snap.pendingElicitation = null;
+              snap.updatedAt = Date.now();
+            }
+            broadcast({
+              event: 'agent.elicitation_result',
+              data: { sessionKey, elicitationId: m.elicitation_id, values: m.values, timestamp: Date.now() },
+            });
+          }
+
+          // ── Worktree events ──────────────────────────────────────────
+          if (m.type === 'system' && m.subtype === 'worktree_created') {
+            const snap = sessionSnapshots.get(sessionKey);
+            if (snap) {
+              snap.activeWorktrees.push({ path: m.worktree_path as string, branch: m.branch as string });
+              snap.updatedAt = Date.now();
+            }
+            broadcast({
+              event: 'agent.worktree_created',
+              data: { sessionKey, path: m.worktree_path, branch: m.branch, timestamp: Date.now() },
+            });
+          }
+
+          if (m.type === 'system' && m.subtype === 'worktree_removed') {
+            const snap = sessionSnapshots.get(sessionKey);
+            if (snap) {
+              snap.activeWorktrees = snap.activeWorktrees.filter(w => w.path !== m.worktree_path);
+              snap.updatedAt = Date.now();
+            }
+            broadcast({
+              event: 'agent.worktree_removed',
+              data: { sessionKey, path: m.worktree_path, timestamp: Date.now() },
+            });
           }
 
           if (m.type === 'stream_event') {
@@ -3121,6 +3269,39 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
           return { id, result: { answered: true, idempotent: false } };
         }
 
+        case 'chat.answerElicitation': {
+          const elicitationId = params?.elicitationId as string;
+          const values = params?.values as Record<string, unknown>;
+          const sk = params?.sessionKey as string;
+          if (!elicitationId) return { id, error: 'elicitationId required' };
+          // Clear the pending elicitation from snapshot
+          const snap = sk ? sessionSnapshots.get(sk) : undefined;
+          if (snap) {
+            snap.pendingElicitation = null;
+            snap.updatedAt = Date.now();
+          }
+          // Broadcast to clear UI on other clients
+          if (sk) {
+            broadcast({ event: 'agent.elicitation_result', data: { sessionKey: sk, elicitationId, values, timestamp: Date.now() } });
+          }
+          return { id, result: { answered: true } };
+        }
+
+        case 'chat.dismissElicitation': {
+          const elicitationId = params?.elicitationId as string;
+          const sk = params?.sessionKey as string;
+          if (!elicitationId) return { id, error: 'elicitationId required' };
+          const snap = sk ? sessionSnapshots.get(sk) : undefined;
+          if (snap) {
+            snap.pendingElicitation = null;
+            snap.updatedAt = Date.now();
+          }
+          if (sk) {
+            broadcast({ event: 'agent.elicitation_result', data: { sessionKey: sk, elicitationId, values: null, timestamp: Date.now() } });
+          }
+          return { id, result: { dismissed: true } };
+        }
+
         case 'chat.history': {
           const sessionId = params?.sessionId as string;
           if (!sessionId) return { id, error: 'sessionId required' };
@@ -3199,6 +3380,44 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
           if (!sessionKey) return { id, error: 'sessionKey required' };
           const seq = getCheckpointSeq(sessionKey);
           return { id, result: { sessionKey, seq } };
+        }
+
+        case 'sessions.fork': {
+          const sessionId = params?.sessionId as string;
+          if (!sessionId) return { id, error: 'sessionId required' };
+          try {
+            const { forkSession } = await import('@anthropic-ai/claude-agent-sdk');
+            const forked = await forkSession(sessionId);
+            return { id, result: { sessionId: forked.sessionId } };
+          } catch (err) {
+            return { id, error: `fork failed: ${err instanceof Error ? err.message : String(err)}` };
+          }
+        }
+
+        case 'sessions.tag': {
+          const sessionId = params?.sessionId as string;
+          const tag = params?.tag as string | null;
+          if (!sessionId) return { id, error: 'sessionId required' };
+          try {
+            const { tagSession } = await import('@anthropic-ai/claude-agent-sdk');
+            await tagSession(sessionId, tag ?? null);
+            return { id, result: { tagged: true } };
+          } catch (err) {
+            return { id, error: `tag failed: ${err instanceof Error ? err.message : String(err)}` };
+          }
+        }
+
+        case 'sessions.rename': {
+          const sessionId = params?.sessionId as string;
+          const name = params?.name as string;
+          if (!sessionId || !name) return { id, error: 'sessionId and name required' };
+          try {
+            const { renameSession } = await import('@anthropic-ai/claude-agent-sdk');
+            await renameSession(sessionId, name);
+            return { id, result: { renamed: true } };
+          } catch (err) {
+            return { id, error: `rename failed: ${err instanceof Error ? err.message : String(err)}` };
+          }
         }
 
         case 'channels.status': {
@@ -3764,10 +3983,12 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
             name: skill.name,
             description: skill.description,
             path: skill.path,
+            dir: skill.dir,
             userInvocable: skill.userInvocable,
             metadata: skill.metadata,
             eligibility: checkSkillEligibility(skill, config),
             builtIn: !skill.path.startsWith(userSkillsDir),
+            files: skill.files,
           }));
           return { id, result };
         }
@@ -3779,7 +4000,33 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
           if (!skill) return { id, error: `skill not found: ${name}` };
           try {
             const raw = readFileSync(skill.path, 'utf-8');
-            return { id, result: { name: skill.name, path: skill.path, raw } };
+            return { id, result: { name: skill.name, path: skill.path, dir: skill.dir, raw, files: skill.files } };
+          } catch (err) {
+            return { id, error: err instanceof Error ? err.message : String(err) };
+          }
+        }
+
+        case 'skills.readFile': {
+          const name = params?.name as string;
+          const filePath = params?.filePath as string;
+          if (!name) return { id, error: 'name required' };
+          if (!filePath) return { id, error: 'filePath required' };
+          if (filePath.includes('..') || filePath.startsWith('/')) {
+            return { id, error: 'invalid file path' };
+          }
+          const skill = findSkillByName(name, config);
+          if (!skill) return { id, error: `skill not found: ${name}` };
+          const fullPath = join(skill.dir, filePath);
+          if (!existsSync(fullPath)) return { id, error: `file not found: ${filePath}` };
+          // resolve symlinks and verify path stays within skill dir
+          try {
+            const resolved = realpathSync(fullPath);
+            const skillDirReal = realpathSync(skill.dir);
+            if (!resolved.startsWith(skillDirReal + sep)) {
+              return { id, error: 'invalid file path' };
+            }
+            const content = readFileSync(resolved, 'utf-8');
+            return { id, result: { name, filePath, content } };
           } catch (err) {
             return { id, error: err instanceof Error ? err.message : String(err) };
           }
@@ -3804,7 +4051,7 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
           if (metadata?.requires) fm.metadata = { requires: metadata.requires };
 
           const yamlLines = ['---'];
-          yamlLines.push(`name: ${fm.name}`);
+          yamlLines.push(`name: "${(fm.name as string).replace(/"/g, '\\"')}"`);
           yamlLines.push(`description: "${(fm.description as string).replace(/"/g, '\\"')}"`);
           if (fm['user-invocable'] === false) yamlLines.push('user-invocable: false');
           if (fm.metadata) {
@@ -3830,6 +4077,73 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
           }
         }
 
+        case 'skills.install': {
+          const repo = params?.repo as string;
+          const skillPath = params?.skillPath as string;
+          const skillName = (params?.name as string) || skillPath?.split('/').pop();
+          if (!repo) return { id, error: 'repo required' };
+          if (!skillPath) return { id, error: 'skillPath required' };
+          if (!skillName) return { id, error: 'could not determine skill name' };
+
+          // validate repo format (owner/name) and skillPath (no traversal)
+          if (!/^[\w.\-]+\/[\w.\-]+$/.test(repo)) {
+            return { id, error: 'invalid repo format, expected owner/repo' };
+          }
+          if (skillPath.includes('..')) {
+            return { id, error: 'invalid skill path' };
+          }
+
+          const installDir = join(SKILLS_DIR, skillName);
+          if (existsSync(installDir)) {
+            return { id, error: `skill "${skillName}" already installed` };
+          }
+
+          const tmp = join(tmpdir(), `dorabot-skill-${Date.now()}`);
+          const tarPath = tmp + '.tar.gz';
+          const extractDir = tmp + '-extract';
+
+          try {
+            // Download repo tarball (single HTTP request, no API rate limits, no auth)
+            const tarUrl = `https://github.com/${repo}/archive/HEAD.tar.gz`;
+            const res = await fetch(tarUrl, { redirect: 'follow' });
+            if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status}`);
+
+            await pipeline(res.body as any, createWriteStream(tarPath));
+
+            // Extract tarball using system tar (always available on macOS)
+            mkdirSync(extractDir, { recursive: true });
+            execSync(`tar xzf "${tarPath}" -C "${extractDir}"`, { timeout: 30_000 });
+
+            // Find extracted root dir (format: repo-name-{sha}/)
+            const roots = readdirSync(extractDir);
+            if (roots.length !== 1) throw new Error('unexpected tarball structure');
+            const srcDir = join(extractDir, roots[0], skillPath);
+
+            if (!existsSync(srcDir) || !statSync(srcDir).isDirectory()) {
+              throw new Error(`skill path not found in repo: ${skillPath}`);
+            }
+
+            // Verify SKILL.md exists
+            if (!existsSync(join(srcDir, 'SKILL.md'))) {
+              throw new Error(`no SKILL.md found in ${skillPath}`);
+            }
+
+            // Copy skill directory to install location
+            mkdirSync(SKILLS_DIR, { recursive: true });
+            cpSync(srcDir, installDir, { recursive: true });
+
+            const skill = findSkillByName(skillName, config);
+            return { id, result: { name: skillName, installed: true, path: installDir, skill } };
+          } catch (err) {
+            if (existsSync(installDir)) rmSync(installDir, { recursive: true, force: true });
+            return { id, error: err instanceof Error ? err.message : String(err) };
+          } finally {
+            // cleanup temp files
+            if (existsSync(tarPath)) rmSync(tarPath, { force: true });
+            if (existsSync(extractDir)) rmSync(extractDir, { recursive: true, force: true });
+          }
+        }
+
         case 'skills.delete': {
           const name = params?.name as string;
           if (!name) return { id, error: 'name required' };
@@ -3837,7 +4151,7 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
           const skill = findSkillByName(name, config);
           if (!skill) return { id, error: `skill not found: ${name}` };
 
-          const userSkillsDir = SKILLS_DIR;
+          const userSkillsDir = SKILLS_DIR + sep;
           if (!skill.path.startsWith(userSkillsDir)) {
             return { id, error: 'cannot delete built-in skills' };
           }
@@ -4229,6 +4543,39 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
 
           if (key === 'userTimezone' && typeof value === 'string') {
             config.userTimezone = value;
+            saveConfig(config);
+            broadcast({ event: 'config.update', data: { key, value } });
+            return { id, result: { key, value } };
+          }
+
+          if (key === 'betas') {
+            if (value === null || value === undefined) {
+              config.betas = undefined;
+            } else if (Array.isArray(value) && value.every(v => typeof v === 'string')) {
+              config.betas = value as string[];
+            } else {
+              return { id, error: 'betas must be a string array or null' };
+            }
+            saveConfig(config);
+            broadcast({ event: 'config.update', data: { key, value } });
+            return { id, result: { key, value } };
+          }
+
+          if (key === 'settingSources') {
+            if (value === null || value === undefined) {
+              config.settingSources = undefined;
+            } else if (Array.isArray(value) && value.every(v => typeof v === 'string')) {
+              config.settingSources = value as string[];
+            } else {
+              return { id, error: 'settingSources must be a string array or null' };
+            }
+            saveConfig(config);
+            broadcast({ event: 'config.update', data: { key, value } });
+            return { id, result: { key, value } };
+          }
+
+          if (key === 'agentProgressSummaries' && typeof value === 'boolean') {
+            config.agentProgressSummaries = value;
             saveConfig(config);
             broadcast({ event: 'config.update', data: { key, value } });
             return { id, result: { key, value } };
@@ -5551,13 +5898,26 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
   // start channels
   await channelManager.startAll();
 
+  // Start HTTP auth fallback server (Phase 2)
+  let httpAuth: HttpAuthServer | null = null;
+  try {
+    httpAuth = await startHttpAuthServer();
+    console.log(`[gateway] HTTP auth server started on port ${httpAuth.port}`);
+  } catch (err) {
+    console.error('[gateway] HTTP auth server failed to start (non-fatal):', err);
+  }
+
   return {
+    httpAuthPort: httpAuth?.port || 0,
     close: async () => {
       clearInterval(heartbeatSweepTimer);
       for (const [, batch] of streamBatches) { if (batch.timer) clearTimeout(batch.timer); }
       streamBatches.clear();
       unsubscribeClaudeAuthRequired();
       unsubscribeCodexAuthRequired();
+      // Shut down HTTP auth server and flush auth cache
+      await httpAuth?.close();
+      flushAuthCache();
       for (const [, timer] of runEventPruneTimers) clearTimeout(timer);
       runEventPruneTimers.clear();
       scheduler?.stop();

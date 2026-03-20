@@ -32,7 +32,7 @@ const TOOL_PENDING_TEXT: Record<string, string> = {
   research_view: 'viewing research', research_add: 'adding research', research_update: 'updating research',
 };
 
-export type ConnectionState = 'connecting' | 'connected' | 'disconnected';
+export type ConnectionState = 'connecting' | 'connected' | 'degraded' | 'disconnected';
 
 // apply a raw stream event to a ChatItem array (works for top-level or subItems)
 function applyStreamEvent(items: ChatItem[], evt: Record<string, unknown>): ChatItem[] {
@@ -239,17 +239,58 @@ type ProviderAuthInfo = {
   reconnectRequired?: boolean;
 };
 
+export type TaskProgress = {
+  taskId: string;
+  toolUseId: string;
+  toolCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+  summary?: string;
+  status: 'running' | 'completed' | 'failed';
+  updatedAt: number;
+};
+
+export type ElicitationField = {
+  name: string;
+  type: 'text' | 'select' | 'boolean' | 'number';
+  label: string;
+  description?: string;
+  required?: boolean;
+  options?: { value: string; label: string }[];
+  default_value?: unknown;
+};
+
+export type PendingElicitation = {
+  elicitationId: string;
+  sessionKey: string;
+  message: string;
+  fields: ElicitationField[];
+  timestamp: number;
+};
+
+export type ActiveWorktree = {
+  path: string;
+  branch: string;
+};
+
 export type SessionState = {
   chatItems: ChatItem[];
   agentStatus: string;
   sessionId?: string;
   pendingQuestion: AskUserQuestion | null;
+  taskProgress: Record<string, TaskProgress>;
+  pendingElicitation: PendingElicitation | null;
+  activeWorktrees: ActiveWorktree[];
 };
 
 const DEFAULT_SESSION_STATE: SessionState = {
   chatItems: [],
   agentStatus: 'idle',
   pendingQuestion: null,
+  taskProgress: {},
+  pendingElicitation: null,
+  activeWorktrees: [],
 };
 
 type RpcResponse = {
@@ -1163,6 +1204,129 @@ export function useGateway() {
         break;
       }
 
+      // ── Subagent task progress ────────────────────────────────────
+      case 'agent.task_started': {
+        const d = data as { sessionKey: string; taskId: string; toolUseId: string };
+        const sk = d.sessionKey;
+        if (!sk || !trackedSessionsRef.current.has(sk)) break;
+        setSessionStates(prev => {
+          const state = prev[sk];
+          if (!state) return prev;
+          const tp = { ...state.taskProgress };
+          tp[d.taskId] = {
+            taskId: d.taskId, toolUseId: d.toolUseId, status: 'running',
+            toolCount: 0, inputTokens: 0, outputTokens: 0, durationMs: 0, updatedAt: Date.now(),
+          };
+          return { ...prev, [sk]: { ...state, taskProgress: tp } };
+        });
+        break;
+      }
+
+      case 'agent.task_progress': {
+        const d = data as { sessionKey: string; taskId: string; toolCount?: number; inputTokens?: number; outputTokens?: number; durationMs?: number; summary?: string };
+        const sk = d.sessionKey;
+        if (!sk || !trackedSessionsRef.current.has(sk)) break;
+        setSessionStates(prev => {
+          const state = prev[sk];
+          if (!state) return prev;
+          const existing = state.taskProgress[d.taskId];
+          if (!existing) return prev;
+          const tp = { ...state.taskProgress };
+          tp[d.taskId] = {
+            ...existing,
+            toolCount: d.toolCount ?? existing.toolCount,
+            inputTokens: d.inputTokens ?? existing.inputTokens,
+            outputTokens: d.outputTokens ?? existing.outputTokens,
+            durationMs: d.durationMs ?? existing.durationMs,
+            summary: d.summary ?? existing.summary,
+            updatedAt: Date.now(),
+          };
+          return { ...prev, [sk]: { ...state, taskProgress: tp } };
+        });
+        break;
+      }
+
+      case 'agent.task_notification': {
+        const d = data as { sessionKey: string; taskId: string; toolUseId: string };
+        const sk = d.sessionKey;
+        if (!sk || !trackedSessionsRef.current.has(sk)) break;
+        setSessionStates(prev => {
+          const state = prev[sk];
+          if (!state) return prev;
+          const existing = state.taskProgress[d.taskId];
+          if (!existing) return prev;
+          const tp = { ...state.taskProgress };
+          tp[d.taskId] = { ...existing, status: 'completed', updatedAt: Date.now() };
+          return { ...prev, [sk]: { ...state, taskProgress: tp } };
+        });
+        break;
+      }
+
+      // ── Elicitation (structured questions from agent) ─────────────
+      case 'agent.elicitation': {
+        const d = data as { sessionKey: string; elicitationId: string; message: string; fields: any[] };
+        const sk = d.sessionKey;
+        if (!sk || !trackedSessionsRef.current.has(sk)) break;
+        setSessionStates(prev => {
+          const state = prev[sk];
+          if (!state) return prev;
+          return {
+            ...prev,
+            [sk]: {
+              ...state,
+              pendingElicitation: {
+                elicitationId: d.elicitationId, sessionKey: sk,
+                message: d.message, fields: d.fields, timestamp: Date.now(),
+              },
+            },
+          };
+        });
+        break;
+      }
+
+      case 'agent.elicitation_result': {
+        const d = data as { sessionKey: string };
+        const sk = d.sessionKey;
+        if (!sk || !trackedSessionsRef.current.has(sk)) break;
+        setSessionStates(prev => {
+          const state = prev[sk];
+          if (!state) return prev;
+          return { ...prev, [sk]: { ...state, pendingElicitation: null } };
+        });
+        break;
+      }
+
+      // ── Worktree events ───────────────────────────────────────────
+      case 'agent.worktree_created': {
+        const d = data as { sessionKey: string; path: string; branch: string };
+        const sk = d.sessionKey;
+        if (!sk || !trackedSessionsRef.current.has(sk)) break;
+        setSessionStates(prev => {
+          const state = prev[sk];
+          if (!state) return prev;
+          return {
+            ...prev,
+            [sk]: { ...state, activeWorktrees: [...state.activeWorktrees, { path: d.path, branch: d.branch }] },
+          };
+        });
+        break;
+      }
+
+      case 'agent.worktree_removed': {
+        const d = data as { sessionKey: string; path: string };
+        const sk = d.sessionKey;
+        if (!sk || !trackedSessionsRef.current.has(sk)) break;
+        setSessionStates(prev => {
+          const state = prev[sk];
+          if (!state) return prev;
+          return {
+            ...prev,
+            [sk]: { ...state, activeWorktrees: state.activeWorktrees.filter(w => w.path !== d.path) },
+          };
+        });
+        break;
+      }
+
       case 'agent.stream_batch': {
         const events = data as any[];
         for (const evt of events) {
@@ -1877,6 +2041,18 @@ export function useGateway() {
     return runs;
   }, [rpc]);
 
+  const forkSession = useCallback(async (sessionId: string) => {
+    return await rpc('sessions.fork', { sessionId }) as { sessionId: string };
+  }, [rpc]);
+
+  const tagSession = useCallback(async (sessionId: string, tag: string | null) => {
+    return await rpc('sessions.tag', { sessionId, tag });
+  }, [rpc]);
+
+  const renameSession = useCallback(async (sessionId: string, name: string) => {
+    return await rpc('sessions.rename', { sessionId, name });
+  }, [rpc]);
+
   const refreshSessions = useCallback((list?: SessionInfo[]) => {
     if (list) { setSessions(list); return; }
     rpc('sessions.list').then((res) => {
@@ -2020,6 +2196,9 @@ export function useGateway() {
     markCalendarRunsSeen: useCallback(() => {
       setCalendarRuns(prev => prev.map(r => ({ ...r, seen: true })));
     }, []),
+    forkSession,
+    tagSession,
+    renameSession,
     runBackground,
     getBackgroundRuns,
     getProviderStatus,

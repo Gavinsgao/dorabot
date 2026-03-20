@@ -385,7 +385,7 @@ export function hasOAuthTokens(): boolean {
 
 export async function isClaudeInstalled(): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile('claude', ['--version'], { timeout: 5000 }, (err) => {
+    execFile('claude', ['--version'], { timeout: 15000 }, (err) => {
       resolve(!err);
     });
   });
@@ -623,6 +623,106 @@ export class ClaudeProvider implements Provider {
     _cliHasAuth = null;
   }
 
+  /**
+   * Verify auth by running a real SDK test query.
+   * This is the most definitive check — if the model responds, auth is valid.
+   * Uses the same pattern as automaker's verify-claude-auth endpoint.
+   */
+  async verifyAuth(): Promise<{ authenticated: boolean; authType?: string; error?: string }> {
+    const AUTH_ERROR_PATTERNS = [
+      'oauth token revoked', 'please run /login', 'token revoked',
+      'invalid_api_key', 'authentication_error', 'unauthorized',
+      'not authenticated', 'authentication failed', 'invalid api key',
+    ];
+    const BILLING_PATTERNS = [
+      'credit balance is too low', 'insufficient credits', 'payment required',
+    ];
+    const RATE_LIMIT_PATTERNS = [
+      'rate limit', 'rate_limit', 'limit reached',
+    ];
+
+    const containsPattern = (text: string, patterns: string[]): boolean =>
+      patterns.some(p => text.toLowerCase().includes(p));
+
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), 30_000);
+
+    try {
+      // Ensure OAuth token is fresh
+      const method = getActiveAuthMethod();
+      if (method === 'dorabot_oauth') {
+        await ensureOAuthToken();
+      }
+
+      const stream = query({
+        prompt: "Reply with only the word 'ok'",
+        options: {
+          model: 'claude-sonnet-4-6',
+          maxTurns: 1,
+          allowedTools: [],
+          abortController,
+        },
+      });
+
+      let receivedContent = false;
+      let errorMessage = '';
+
+      for await (const msg of stream) {
+        const msgStr = JSON.stringify(msg);
+
+        if (containsPattern(msgStr, BILLING_PATTERNS)) {
+          errorMessage = 'Credit balance is too low. Please add credits to your Anthropic account.';
+          break;
+        }
+        if (containsPattern(msgStr, AUTH_ERROR_PATTERNS)) {
+          errorMessage = method === 'dorabot_oauth' || method === 'cli_keychain'
+            ? 'OAuth authentication failed. Please re-authenticate.'
+            : 'API key is invalid or has been revoked.';
+          break;
+        }
+
+        const m = msg as Record<string, unknown>;
+        if (m.type === 'assistant' && m.message) {
+          const content = (m.message as any)?.content;
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              if (block.type === 'text' && block.text?.length > 0) {
+                receivedContent = true;
+              }
+            }
+          }
+        }
+        if (m.type === 'result') {
+          receivedContent = true;
+          const resultStr = JSON.stringify(m);
+          if (containsPattern(resultStr, RATE_LIMIT_PATTERNS)) {
+            // Rate limit means auth worked but usage is limited
+            return { authenticated: true, authType: method === 'api_key' ? 'api_key' : 'oauth' };
+          }
+        }
+      }
+
+      if (errorMessage) {
+        return { authenticated: false, error: errorMessage };
+      }
+      if (receivedContent) {
+        return { authenticated: true, authType: method === 'api_key' ? 'api_key' : 'oauth' };
+      }
+      return { authenticated: false, error: 'No response received from Claude.' };
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg.includes('abort') || errMsg.includes('timeout')) {
+        return { authenticated: false, error: 'Verification timed out. Please try again.' };
+      }
+      if (containsPattern(errMsg, AUTH_ERROR_PATTERNS)) {
+        return { authenticated: false, error: 'Authentication failed.' };
+      }
+      return { authenticated: false, error: errMsg };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   resetAuth(): void {
     this._cachedAuth = null;
     _cliHasAuth = null;
@@ -753,10 +853,15 @@ export class ClaudeProvider implements Provider {
       ? EFFORT_MAP[opts.config.reasoningEffort]
       : undefined;
 
-    // Build thinking config
+    // Build thinking config — auto-coerce to adaptive for 4.6 models (budgetTokens deprecated)
     let thinking: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' } | undefined;
     const thinkingCfg = opts.config.thinking;
-    if (thinkingCfg === 'adaptive') {
+    const is46Model = opts.model.includes('-4-6');
+    if (is46Model && thinkingCfg && typeof thinkingCfg === 'object' && 'type' in thinkingCfg && (thinkingCfg as any).type === 'enabled') {
+      // budgetTokens is deprecated on 4.6 models — force adaptive
+      console.warn(`[claude] budgetTokens is deprecated on ${opts.model}, using adaptive thinking instead`);
+      thinking = { type: 'adaptive' };
+    } else if (thinkingCfg === 'adaptive') {
       thinking = { type: 'adaptive' };
     } else if (thinkingCfg === 'disabled') {
       thinking = { type: 'disabled' };
@@ -788,6 +893,9 @@ export class ClaudeProvider implements Provider {
         maxBudgetUsd: opts.config.maxBudgetUsd,
         effort,
         thinking,
+        betas: opts.config.betas,
+        settingSources: opts.config.settingSources,
+        agentProgressSummaries: opts.config.agentProgressSummaries ?? true,
         includePartialMessages: true,
         canUseTool: opts.canUseTool as any,
         abortController: opts.abortController,

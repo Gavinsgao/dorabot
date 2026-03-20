@@ -400,7 +400,10 @@ export default function App() {
 
   // Check provider auth on connect - show onboarding if not completed yet
   useEffect(() => {
-    if (gw.connectionState === 'connected' && gw.providerInfo && !onboardingCheckedRef.current) {
+    // Treat 'connected' and 'degraded' the same for auth checks.
+    // In degraded mode, auth is still available via HTTP fallback.
+    const isUsable = gw.connectionState === 'connected' || gw.connectionState === 'degraded';
+    if (isUsable && gw.providerInfo && !onboardingCheckedRef.current) {
       onboardingCheckedRef.current = true;
       const now = Date.now();
       const unauthSnoozeUntil = Number(localStorage.getItem(ONBOARDING_UNAUTH_SNOOZE_UNTIL_KEY) || '0');
@@ -416,7 +419,9 @@ export default function App() {
         setShowOnboarding(true);
       }
     }
-    if (gw.connectionState === 'disconnected') {
+    // Only reset onboarding check on full disconnect (not degraded) and only if never completed.
+    // Transient disconnects and degraded mode should not re-prompt completed users.
+    if (gw.connectionState === 'disconnected' && !onboardingCompletedRef.current) {
       onboardingCheckedRef.current = false;
     }
   }, [gw.connectionState, gw.providerInfo]);
@@ -958,6 +963,8 @@ export default function App() {
 
   const statusDotColor = gw.connectionState === 'connected'
     ? 'bg-success'
+    : gw.connectionState === 'degraded'
+    ? 'bg-warning'
     : gw.connectionState === 'connecting'
     ? 'bg-warning'
     : 'bg-destructive';
@@ -1275,27 +1282,14 @@ export default function App() {
       </div>
 
       {/* Update banner */}
-      {updateState.status === 'available' && (
-        <div className="shrink-0 px-4 py-1.5 bg-primary/10 border-b border-primary/20 flex items-center gap-2 text-xs">
-          <span className="text-primary">Update {updateState.version} available</span>
-          <button
-            onClick={() => (window as any).electronAPI?.downloadUpdate?.()}
-            className="ml-auto px-2 py-0.5 rounded bg-primary text-primary-foreground text-[10px] font-medium hover:bg-primary/90 transition-colors"
-          >
-            Download
-          </button>
-          <button
-            onClick={() => setUpdateState({ status: 'idle' })}
-            className="text-muted-foreground hover:text-foreground text-[10px]"
-          >
-            Later
-          </button>
-        </div>
-      )}
-      {updateState.status === 'downloading' && (
+      {(updateState.status === 'available' || updateState.status === 'downloading') && (
         <div className="shrink-0 px-4 py-1.5 bg-primary/10 border-b border-primary/20 flex items-center gap-2 text-xs">
           <Loader2 className="w-3 h-3 animate-spin text-primary" />
-          <span className="text-primary">Downloading update... {updateState.percent != null ? `${updateState.percent}%` : ''}</span>
+          <span className="text-primary">
+            {updateState.status === 'downloading' && updateState.percent != null
+              ? `Downloading update... ${updateState.percent}%`
+              : `Downloading update ${updateState.version ?? ''}...`}
+          </span>
         </div>
       )}
       {updateState.status === 'downloaded' && (
@@ -1319,8 +1313,14 @@ export default function App() {
         <div className="shrink-0 px-4 py-1.5 bg-destructive/10 border-b border-destructive/20 flex items-center gap-2 text-xs">
           <span className="text-destructive">Update failed: {updateState.message}</span>
           <button
+            onClick={() => (window as any).electronAPI?.checkForUpdate?.()}
+            className="ml-auto px-2 py-0.5 rounded bg-destructive/20 text-destructive text-[10px] font-medium hover:bg-destructive/30 transition-colors"
+          >
+            Retry
+          </button>
+          <button
             onClick={() => setUpdateState({ status: 'idle' })}
-            className="ml-auto text-muted-foreground hover:text-foreground text-[10px]"
+            className="text-muted-foreground hover:text-foreground text-[10px]"
           >
             Dismiss
           </button>
@@ -1408,7 +1408,7 @@ export default function App() {
                     return (
                       <button
                         key={s.id}
-                        className={`flex items-center gap-1.5 w-full px-2.5 py-1 rounded-md text-[10px] transition-colors ${
+                        className={`flex items-center gap-1.5 w-full px-2.5 py-1 rounded-md text-[10px] transition-colors group ${
                           isActive
                             ? 'bg-secondary text-foreground'
                             : isVisible
@@ -1416,7 +1416,30 @@ export default function App() {
                             : 'text-muted-foreground hover:bg-secondary/50'
                         }`}
                         onClick={() => handleViewSession(s.id, s.channel, s.chatId, s.chatType)}
-                        title={`${s.channel || 'desktop'} | ${s.messageCount} msgs | ${new Date(s.updatedAt).toLocaleString()}`}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          const actions = [
+                            { label: 'Fork session', action: () => gw.forkSession(s.id).then(r => { toast.success(`Forked → ${r.sessionId.slice(0, 12)}...`); gw.refreshSessions(); }).catch(err => toast.error(String(err))) },
+                            { label: 'Rename', action: () => { const name = prompt('Session name:'); if (name) gw.renameSession(s.id, name).then(() => { toast.success('Renamed'); gw.refreshSessions(); }).catch(err => toast.error(String(err))); } },
+                            { label: 'Tag', action: () => { const tag = prompt('Tag (empty to clear):'); gw.tagSession(s.id, tag || null).then(() => { toast.success(tag ? `Tagged: ${tag}` : 'Tag cleared'); gw.refreshSessions(); }).catch(err => toast.error(String(err))); } },
+                          ];
+                          // Simple popover via native context menu workaround using toast actions
+                          const menu = document.createElement('div');
+                          menu.className = 'fixed z-50 bg-popover border border-border rounded-lg shadow-lg py-1 min-w-[140px]';
+                          menu.style.left = `${e.clientX}px`;
+                          menu.style.top = `${e.clientY}px`;
+                          for (const a of actions) {
+                            const btn = document.createElement('button');
+                            btn.className = 'w-full px-3 py-1 text-[11px] text-left hover:bg-secondary transition-colors';
+                            btn.textContent = a.label;
+                            btn.onclick = () => { menu.remove(); a.action(); };
+                            menu.appendChild(btn);
+                          }
+                          document.body.appendChild(menu);
+                          const dismiss = (ev: MouseEvent) => { if (!menu.contains(ev.target as Node)) { menu.remove(); document.removeEventListener('mousedown', dismiss); } };
+                          setTimeout(() => document.addEventListener('mousedown', dismiss), 0);
+                        }}
+                        title={`${s.channel || 'desktop'} | ${s.messageCount} msgs | ${new Date(s.updatedAt).toLocaleString()}\nRight-click for fork/rename/tag`}
                       >
                         <span className="w-3 h-3 shrink-0 flex items-center justify-center">{channelIcon(s.channel)}</span>
                         <span className="truncate flex-1 text-left">
@@ -1606,7 +1629,7 @@ export default function App() {
               ) : (
                 <FileExplorer
                   rpc={gw.rpc}
-                  connected={gw.connectionState === 'connected'}
+                  connected={gw.connectionState === 'connected' || gw.connectionState === 'degraded'}
                   onFileClick={(path) => tabState.openFileTab(path)}
                   onOpenDiff={(opts) => tabState.openDiffTab(opts)}
                   onFileChange={gw.onFileChange}
