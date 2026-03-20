@@ -46,7 +46,7 @@ import type { ProviderName } from '../config.js';
 import { buildProviderAuthGate, classifyAuthRecovery, type ProviderAuthGate } from './auth-state.js';
 import { startHttpAuthServer, type HttpAuthServer } from './http-auth-server.js';
 import { setCachedAuth, flushAuthCache } from '../providers/auth-cache.js';
-import { randomUUID, randomBytes } from 'node:crypto';
+import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import { classifyToolCall, cleanToolName, isToolAllowed, type Tier } from './tool-policy.js';
 import { AUTONOMOUS_SCHEDULE_ID, buildAutonomousCalendarItem, PULSE_INTERVALS, DEFAULT_PULSE_INTERVAL, pulseIntervalToRrule, rruleToPulseInterval } from '../autonomous.js';
 import {
@@ -5754,7 +5754,9 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
       if (!clientState.authenticated) {
         if (msg.method === 'auth') {
           const token = (msg.params as any)?.token as string;
-          if (token === gatewayToken) {
+          const tokenBuf = Buffer.from(token || '', 'utf-8');
+          const expectedBuf = Buffer.from(gatewayToken, 'utf-8');
+          if (tokenBuf.length === expectedBuf.length && timingSafeEqual(tokenBuf, expectedBuf)) {
             clientState.authenticated = true;
             clientState.lastSeen = Date.now();
             const activeRunKeys = sessionRegistry.getActiveRunKeys();

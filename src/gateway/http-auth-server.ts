@@ -9,11 +9,14 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
+import { timingSafeEqual } from 'node:crypto';
 import { DORABOT_DIR, GATEWAY_TOKEN_PATH } from '../workspace.js';
 import { getProviderByName } from '../providers/index.js';
 import { buildProviderAuthGate } from './auth-state.js';
 import { getCachedAuth, setCachedAuth, getAllCachedAuth, type CachedProviderAuth } from '../providers/auth-cache.js';
 import type { ProviderName } from '../config.js';
+
+const ALLOWED_PROVIDERS = new Set(['claude', 'codex']);
 
 const HTTP_PORT_PATH = join(DORABOT_DIR, 'http-auth.port');
 
@@ -33,7 +36,6 @@ function json(res: ServerResponse, status: number, data: unknown): void {
   res.writeHead(status, {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(body),
-    'Access-Control-Allow-Origin': '*',
     'Cache-Control': 'no-store',
   });
   res.end(body);
@@ -59,18 +61,27 @@ function readBody(req: IncomingMessage): Promise<string> {
 
 // ── Auth middleware ──────────────────────────────────────────────────
 
+function safeTokenCompare(a: string, b: string): boolean {
+  const ba = Buffer.from(a, 'utf-8');
+  const bb = Buffer.from(b, 'utf-8');
+  if (ba.length !== bb.length) return false;
+  return timingSafeEqual(ba, bb);
+}
+
 function authenticateRequest(req: IncomingMessage): boolean {
   const token = readGatewayToken();
   if (!token) return false; // no token configured = deny all
   const authHeader = req.headers.authorization;
   if (!authHeader) return false;
   const match = authHeader.match(/^Bearer\s+(.+)$/i);
-  return match?.[1] === token;
+  if (!match?.[1]) return false;
+  return safeTokenCompare(match[1], token);
 }
 
 // ── Route handlers ──────────────────────────────────────────────────
 
-async function handleHealth(_req: IncomingMessage, res: ServerResponse, startedAt: number): Promise<void> {
+async function handleHealth(req: IncomingMessage, res: ServerResponse, startedAt: number): Promise<void> {
+  if (!authenticateRequest(req)) { json(res, 401, { error: 'unauthorized' }); return; }
   json(res, 200, { status: 'ok', uptime: Date.now() - startedAt });
 }
 
@@ -79,6 +90,8 @@ async function handleAuthStatus(req: IncomingMessage, res: ServerResponse): Prom
 
   const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
   const providerName = url.searchParams.get('provider') || 'claude';
+
+  if (!ALLOWED_PROVIDERS.has(providerName)) { json(res, 400, { error: 'unknown provider' }); return; }
 
   // Try cache first for fast response
   const cached = getCachedAuth(providerName);
@@ -120,7 +133,8 @@ async function handleAuthStatus(req: IncomingMessage, res: ServerResponse): Prom
     if (stale) {
       json(res, 200, { ...stale, fromCache: true, stale: true });
     } else {
-      json(res, 500, { error: err instanceof Error ? err.message : 'Provider query failed' });
+      console.error('[http-auth] provider query failed:', err);
+      json(res, 500, { error: 'Provider query failed' });
     }
   }
 }
@@ -135,6 +149,8 @@ async function handleAuthRefresh(req: IncomingMessage, res: ServerResponse): Pro
   } catch { /* use defaults */ }
 
   const providerName = body.provider || 'claude';
+
+  if (!ALLOWED_PROVIDERS.has(providerName)) { json(res, 400, { error: 'unknown provider' }); return; }
 
   try {
     const provider = await getProviderByName(providerName);
@@ -158,7 +174,8 @@ async function handleAuthRefresh(req: IncomingMessage, res: ServerResponse): Pro
       refreshed: true,
     });
   } catch (err) {
-    json(res, 500, { error: err instanceof Error ? err.message : 'Refresh failed' });
+    console.error('[http-auth] refresh failed:', err);
+    json(res, 500, { error: 'Refresh failed' });
   }
 }
 
@@ -172,6 +189,8 @@ async function handleAuthVerify(req: IncomingMessage, res: ServerResponse): Prom
   } catch { /* use defaults */ }
 
   const providerName = body.provider || 'claude';
+
+  if (!ALLOWED_PROVIDERS.has(providerName)) { json(res, 400, { error: 'unknown provider' }); return; }
 
   try {
     const provider = await getProviderByName(providerName);
@@ -205,7 +224,8 @@ async function handleAuthVerify(req: IncomingMessage, res: ServerResponse): Prom
       });
     }
   } catch (err) {
-    json(res, 500, { error: err instanceof Error ? err.message : 'Verification failed' });
+    console.error('[http-auth] verification failed:', err);
+    json(res, 500, { error: 'Verification failed' });
   }
 }
 
@@ -226,14 +246,11 @@ export async function startHttpAuthServer(): Promise<HttpAuthServer> {
   const startedAt = Date.now();
 
   const server: Server = createServer(async (req, res) => {
-    // CORS preflight
+    // CORS: this server is only accessed by the Electron main process
+    // (Node.js http.request, not a browser context), so no CORS headers
+    // are needed. Reject browser preflight to prevent cross-origin access.
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-        'Access-Control-Max-Age': '86400',
-      });
+      res.writeHead(204);
       res.end();
       return;
     }
