@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import type { useGateway } from './useGateway';
 import type { useLayout, GroupId } from './useLayout';
 
-export type TabType = 'chat' | 'channels' | 'goals' | 'automation' | 'extensions' | 'memory' | 'research' | 'settings' | 'file' | 'diff' | 'terminal' | 'task';
+export type TabType = 'chat' | 'channels' | 'goals' | 'automation' | 'extensions' | 'agents' | 'memory' | 'research' | 'settings' | 'file' | 'diff' | 'terminal' | 'task';
 
 export type ChatTab = {
   id: string;

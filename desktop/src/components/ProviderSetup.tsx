@@ -57,7 +57,7 @@ function ClaudeSetup({ gateway, onSuccess, onBack, compact, preferredMethod }: C
       setLoading(false);
       setError(err instanceof Error ? err.message : 'Failed to start OAuth');
     }
-  }, [gateway]);
+  }, [gateway.startOAuth]);
 
   const submitAuthCode = useCallback(async () => {
     const code = authCode.trim();

@@ -69,7 +69,7 @@ export function ResearchView({ gateway }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [gateway]);
+  }, [gateway.connectionState, gateway.rpc]);
 
   useEffect(() => { loadItems(); }, [loadItems]);
   useEffect(() => { loadItems(); }, [gateway.researchVersion]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -94,7 +94,7 @@ export function ResearchView({ gateway }: Props) {
       }
     });
     return () => { cancelled = true; };
-  }, [selectedId, gateway]);
+  }, [selectedId, gateway.connectionState, gateway.rpc]);
 
   // re-fetch content when research updates
   useEffect(() => {
@@ -583,14 +583,14 @@ function TableView({ items, focusIndex, onSelect, onFocus, onStatusChange, onCon
   onContextMenu: (e: React.MouseEvent, item: ResearchItem) => void;
 }) {
   return (
-    <div className="text-[11px]">
+    <div className="text-[11px] overflow-x-auto">
       {/* header row */}
-      <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/30 text-muted-foreground/40 text-[10px] font-medium uppercase tracking-wider">
+      <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/30 text-muted-foreground/40 text-[10px] font-medium uppercase tracking-wider min-w-[400px]">
         <span className="w-4" />
         <span className="flex-1">Title</span>
-        <span className="w-28">Topic</span>
+        <span className="w-28 hidden @md:block">Topic</span>
         <span className="w-16">Status</span>
-        <span className="w-24">Tags</span>
+        <span className="w-24 hidden @lg:block">Tags</span>
         <span className="w-16 text-right">Updated</span>
       </div>
       {/* rows */}
@@ -602,7 +602,7 @@ function TableView({ items, focusIndex, onSelect, onFocus, onStatusChange, onCon
             onClick={() => onSelect(item.id)}
             onMouseEnter={() => onFocus(i)}
             onContextMenu={(e) => onContextMenu(e, item)}
-            className={`flex items-center gap-2 w-full px-4 py-1.5 text-left transition-colors ${
+            className={`flex items-center gap-2 w-full px-4 py-1.5 text-left transition-colors min-w-[400px] ${
               i === focusIndex ? 'bg-secondary/50' : 'hover:bg-secondary/20'
             }`}
           >
@@ -611,11 +611,11 @@ function TableView({ items, focusIndex, onSelect, onFocus, onStatusChange, onCon
               className={`w-2 h-2 rounded-full shrink-0 ring-2 ring-transparent hover:ring-primary/30 transition-all ${cfg.dot}`}
             />
             <span className="flex-1 truncate text-foreground">{item.title}</span>
-            <span className="w-28 truncate text-muted-foreground/50 capitalize">{item.topic.replace(/-/g, ' ')}</span>
+            <span className="w-28 truncate text-muted-foreground/50 capitalize hidden @md:block">{item.topic.replace(/-/g, ' ')}</span>
             <span className="w-16">
               <span className={`text-[10px] px-1.5 py-0.5 rounded ${cfg.badge}`}>{cfg.label}</span>
             </span>
-            <span className="w-24 truncate text-muted-foreground/40">{item.tags?.join(', ') || ''}</span>
+            <span className="w-24 truncate text-muted-foreground/40 hidden @lg:block">{item.tags?.join(', ') || ''}</span>
             <span className="w-16 text-right text-muted-foreground/30">{formatDate(item.updatedAt)}</span>
           </button>
         );

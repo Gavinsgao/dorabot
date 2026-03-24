@@ -80,7 +80,7 @@ export function TaskDetailView({ taskId, gateway, onViewSession, onClose }: Prop
     } finally {
       setLoading(false);
     }
-  }, [gateway, taskId]);
+  }, [gateway.connectionState, gateway.rpc, taskId]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -94,7 +94,7 @@ export function TaskDetailView({ taskId, gateway, onViewSession, onClose }: Prop
     } finally {
       setSaving(false);
     }
-  }, [gateway, taskId, load]);
+  }, [gateway.rpc, taskId, load]);
 
   const handleTitleBlur = useCallback(() => {
     const trimmed = title.trim();
@@ -130,7 +130,7 @@ export function TaskDetailView({ taskId, gateway, onViewSession, onClose }: Prop
     } catch (err) {
       toast.error(errorText(err));
     }
-  }, [gateway, taskId, onClose]);
+  }, [gateway.rpc, taskId, onClose]);
 
   const handleViewSession = useCallback(() => {
     if (!task || !onViewSession) return;

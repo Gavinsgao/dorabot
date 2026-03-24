@@ -11,6 +11,7 @@ import { Automations } from './Automations';
 import { SettingsView } from '../views/Settings';
 import { SoulView } from '../views/Soul';
 import { ExtensionsView } from '../views/Extensions';
+import { AgentsView } from '../views/Agents';
 import { GoalsView } from '../views/Goals';
 import { ResearchView } from '../views/Research';
 import { TaskDetailView } from '../views/projects/TaskDetailView';
@@ -176,6 +177,8 @@ export function EditorGroupPanel({
         return <ResearchView gateway={gateway} />;
       case 'extensions':
         return <ExtensionsView gateway={gateway} />;
+      case 'agents':
+        return <AgentsView gateway={gateway} />;
       case 'memory':
         return (
           <SoulView

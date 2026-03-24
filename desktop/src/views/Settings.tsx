@@ -35,7 +35,7 @@ export function SettingsView({ gateway }: Props) {
     } catch (err) {
       console.error(`failed to set ${key}:`, err);
     }
-  }, [gateway]);
+  }, [gateway.setConfig]);
 
   const approvalMode = cfg?.security?.approvalMode || 'approve-sensitive';
   const browserEnabled = cfg?.browser?.enabled ?? false;
@@ -478,7 +478,7 @@ function AnthropicCard({ gateway, disabled }: { gateway: ReturnType<typeof useGa
   // Query auth independently
   useEffect(() => {
     gateway.getProviderAuth('claude').then(setAuthStatus).catch(() => {});
-  }, [gateway]);
+  }, [gateway.getProviderAuth]);
 
   // Sync from providerInfo when active
   const providerInfo = gateway.providerInfo;
@@ -497,11 +497,11 @@ function AnthropicCard({ gateway, disabled }: { gateway: ReturnType<typeof useGa
     setShowAuth(false);
     gateway.getProviderAuth('claude').then(setAuthStatus).catch(() => {});
     if (providerName === 'claude') gateway.getProviderStatus();
-  }, [gateway, providerName]);
+  }, [gateway.getProviderAuth, gateway.getProviderStatus, providerName]);
 
   const set = useCallback(async (key: string, value: unknown) => {
     try { await gateway.setConfig(key, value); } catch (err) { console.error(`failed to set ${key}:`, err); }
-  }, [gateway]);
+  }, [gateway.setConfig]);
 
   return (
     <Card>
@@ -610,7 +610,7 @@ function OpenAICard({ gateway, disabled }: { gateway: ReturnType<typeof useGatew
   // Query auth independently
   useEffect(() => {
     gateway.getProviderAuth('codex').then(setAuthStatus).catch(() => {});
-  }, [gateway]);
+  }, [gateway.getProviderAuth]);
 
   // Sync from providerInfo when active
   const providerInfo = gateway.providerInfo;
@@ -629,11 +629,11 @@ function OpenAICard({ gateway, disabled }: { gateway: ReturnType<typeof useGatew
     setShowAuth(false);
     gateway.getProviderAuth('codex').then(setAuthStatus).catch(() => {});
     if (providerName === 'codex') gateway.getProviderStatus();
-  }, [gateway, providerName]);
+  }, [gateway.getProviderAuth, gateway.getProviderStatus, providerName]);
 
   const set = useCallback(async (key: string, value: unknown) => {
     try { await gateway.setConfig(key, value); } catch (err) { console.error(`failed to set ${key}:`, err); }
-  }, [gateway]);
+  }, [gateway.setConfig]);
 
   return (
     <Card>
@@ -793,8 +793,8 @@ function OpenAICard({ gateway, disabled }: { gateway: ReturnType<typeof useGatew
 
 function SettingRow({ label, description, children }: { label: string; description: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-4">
-      <div className="flex-1 min-w-0">
+    <div className="flex items-center justify-between gap-4 flex-wrap">
+      <div className="flex-1 min-w-[120px]">
         <div className="text-[11px] font-medium text-foreground">{label}</div>
         <div className="text-[10px] text-muted-foreground">{description}</div>
       </div>

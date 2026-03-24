@@ -43,6 +43,7 @@ export type ToolPolicyConfig = {
 export type AgentDefinition = {
   description: string;
   tools?: string[];
+  skills?: string[];
   prompt: string;
   model?: 'sonnet' | 'opus' | 'haiku' | 'inherit';
 };

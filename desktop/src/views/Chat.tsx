@@ -134,7 +134,7 @@ function ModelSelector({ gateway, disabled }: { gateway: ReturnType<typeof useGa
     gateway.getProviderAuth('codex')
       .then((auth) => setCodexAuthMethod(auth.method))
       .catch(() => {});
-  }, [gateway]);
+  }, [gateway.getProviderAuth]);
 
   useEffect(() => {
     if (providerName === 'codex' && gateway.providerInfo?.auth?.method) {
@@ -165,9 +165,9 @@ function ModelSelector({ gateway, disabled }: { gateway: ReturnType<typeof useGa
   };
 
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1 min-w-0 shrink">
       <Select value={currentValue} onValueChange={handleChange} disabled={disabled}>
-        <SelectTrigger size="sm" className="h-7 gap-1.5 text-[11px] rounded-lg shadow-none w-auto">
+        <SelectTrigger size="sm" className="h-7 gap-1.5 text-[11px] rounded-lg shadow-none w-auto min-w-0">
           <img
             src={providerName === 'codex' ? './openai-icon.svg' : './claude-icon.svg'}
             alt=""
@@ -1120,7 +1120,7 @@ export function ChatView({ gateway, chatItems, agentStatus, pendingQuestion, ses
                   </Button>
                   <ModelSelector gateway={gateway} disabled={!connected} />
                   {input.trim() && (
-                    <span className="text-[9px] text-muted-foreground/60 ml-2 select-none">{'\u21E7\u21B5 new line'}</span>
+                    <span className="text-[9px] text-muted-foreground/60 ml-2 select-none hidden @sm:inline">{'\u21E7\u21B5 new line'}</span>
                   )}
                   <span className="flex-1" />
                   <Button
@@ -1167,7 +1167,7 @@ export function ChatView({ gateway, chatItems, agentStatus, pendingQuestion, ses
                     </CollapsibleTrigger>
                   </div>
                   <CollapsibleContent>
-                    <div className="grid grid-cols-2 gap-4 pt-3 max-w-md mx-auto">
+                    <div className="grid grid-cols-1 @sm:grid-cols-2 gap-4 pt-3 max-w-md mx-auto">
                       {ALL_SHORTCUTS.map(s => (
                         <div key={s.section}>
                           <div className="text-[9px] font-semibold text-muted-foreground/60 uppercase tracking-wider mb-1">{s.section}</div>
@@ -1324,7 +1324,7 @@ export function ChatView({ gateway, chatItems, agentStatus, pendingQuestion, ses
             </Button>
             <ModelSelector gateway={gateway} disabled={!connected} />
             {input.trim() && (
-              <span className="text-[9px] text-muted-foreground/60 ml-2 select-none">{'\u21E7\u21B5 new line'}</span>
+              <span className="text-[9px] text-muted-foreground/60 ml-2 select-none hidden @sm:inline">{'\u21E7\u21B5 new line'}</span>
             )}
             <span className="flex-1" />
             {isRunning ? (

@@ -36,7 +36,7 @@ export function GoalsView({ gateway, onViewSession, onSetupChat, onOpenTask }: P
     } finally {
       setLoading(false);
     }
-  }, [gateway]);
+  }, [gateway.connectionState, gateway.rpc]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { if (!loading) void load(); }, [gateway.projectsVersion]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -52,26 +52,26 @@ export function GoalsView({ gateway, onViewSession, onSetupChat, onOpenTask }: P
     void wrap('project:create', async () => {
       await gateway.rpc('projects.add', { title, description });
     });
-  }, [gateway, wrap]);
+  }, [gateway.rpc, wrap]);
 
   const toggleProjectStatus = useCallback((project: Project) => {
     const next: ProjectStatus = project.status === 'paused' ? 'active' : 'paused';
     void wrap(`project:${project.id}`, async () => {
       await gateway.rpc('projects.update', { id: project.id, status: next });
     });
-  }, [gateway, wrap]);
+  }, [gateway.rpc, wrap]);
 
   const completeProject = useCallback((project: Project) => {
     void wrap(`project:${project.id}`, async () => {
       await gateway.rpc('projects.update', { id: project.id, status: 'done' as ProjectStatus });
     });
-  }, [gateway, wrap]);
+  }, [gateway.rpc, wrap]);
 
   const deleteProject = useCallback((projectId: string) => {
     void wrap(`project:delete:${projectId}`, async () => {
       await gateway.rpc('projects.delete', { id: projectId });
     });
-  }, [gateway, wrap]);
+  }, [gateway.rpc, wrap]);
 
   const createTask = useCallback((title: string, goalId?: string, status?: string) => {
     void wrap('task:create', async () => {
@@ -81,7 +81,7 @@ export function GoalsView({ gateway, onViewSession, onSetupChat, onOpenTask }: P
         goalId: goalId || undefined,
       });
     });
-  }, [gateway, wrap]);
+  }, [gateway.rpc, wrap]);
 
   const moveTask = useCallback((taskId: string, toColumn: ColumnId, newGoalId?: string) => {
     const statusMap: Record<ColumnId, TaskStatus> = {
@@ -95,7 +95,7 @@ export function GoalsView({ gateway, onViewSession, onSetupChat, onOpenTask }: P
       if (newGoalId !== undefined) updates.goalId = newGoalId || null;
       await gateway.rpc('tasks.update', updates);
     });
-  }, [gateway, wrap]);
+  }, [gateway.rpc, wrap]);
 
   const handleTaskClick = useCallback((task: Task) => {
     if (onOpenTask) {

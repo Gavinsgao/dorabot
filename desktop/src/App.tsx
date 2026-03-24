@@ -24,7 +24,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/componen
 import type { PanelImperativeHandle } from 'react-resizable-panels';
 import {
   MessageSquare, Radio, Zap, Brain, Settings2,
-  Sparkles, LayoutGrid, Loader2, Star,
+  Sparkles, LayoutGrid, Loader2, Star, Bot,
   Clock, FileSearch, Plug, Folder, FolderOpen, X,
   ShieldAlert, CalendarCheck, Target, FlaskConical, KeyRound, GitBranch, Check, Palette, Play
 } from 'lucide-react';
@@ -83,6 +83,7 @@ const SECONDARY_NAV_ITEMS: { id: TabType; label: string; icon: React.ReactNode }
   { id: 'channels', label: 'Channels', icon: <Radio className="w-3.5 h-3.5" /> },
   { id: 'automation', label: 'Automations', icon: <Zap className="w-3.5 h-3.5" /> },
   { id: 'extensions', label: 'Extensions', icon: <Sparkles className="w-3.5 h-3.5" /> },
+  { id: 'agents', label: 'Agents', icon: <Bot className="w-3.5 h-3.5" /> },
   { id: 'memory', label: 'Memory', icon: <Brain className="w-3.5 h-3.5" /> },
 ];
 
@@ -1009,7 +1010,7 @@ export default function App() {
       return (
         <ResizablePanelGroup orientation="vertical" key={col.id}>
           {col.panes.map((pane, pi) => (
-            <ResizablePanel key={pane.id} defaultSize={`${col.sizes[pi]}%`} minSize="10%">
+            <ResizablePanel key={pane.id} defaultSize={`${col.sizes[pi]}%`} minSize="20%">
               <EditorGroupPanel
                 group={pane}
                 isActive={activeGroupId === pane.id}
@@ -1032,7 +1033,7 @@ export default function App() {
     return (
       <ResizablePanelGroup key={`cols-${columns.length}`} orientation="horizontal" className="h-full">
         {columns.map((col, ci) => (
-          <ResizablePanel key={col.id} defaultSize={`${columnSizes[ci]}%`} minSize="10%">
+          <ResizablePanel key={col.id} defaultSize={`${columnSizes[ci]}%`} minSize="20%">
             {renderColumn(col)}
           </ResizablePanel>
         )).flatMap((el, i, arr) =>

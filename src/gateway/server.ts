@@ -20,6 +20,7 @@ import { streamAgent, type AgentResult } from '../agent.js';
 import type { RunHandle } from '../providers/types.js';
 import { startScheduler, loadCalendarItems, migrateCronToCalendar, type SchedulerRunner } from '../calendar/scheduler.js';
 import { checkSkillEligibility, loadAllSkills, findSkillByName } from '../skills/loader.js';
+import { builtInAgents, getAllAgents } from '../agents/definitions.js';
 import type { InboundMessage } from '../channels/types.js';
 import { getAllChannelStatuses } from '../channels/index.js';
 import { loginWhatsApp, logoutWhatsApp, isWhatsAppLinked } from '../channels/whatsapp/login.js';
@@ -3975,6 +3976,91 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
           try { if (existsSync(deleted.filePath)) unlinkSync(deleted.filePath); } catch {}
           broadcast({ event: 'research.update', data: { message: `Research deleted: ${deleted.title}` } });
           return { id, result: { deleted: true } };
+        }
+
+        // ── agents ─────────────────────────────────────────────────
+
+        case 'agents.list': {
+          const all = getAllAgents(config);
+          const result = Object.entries(all).map(([name, def]) => ({
+            name,
+            ...def,
+            builtIn: name in builtInAgents,
+            modified: name in builtInAgents && name in config.agents,
+          }));
+          return { id, result };
+        }
+
+        case 'agents.get': {
+          const name = params?.name as string;
+          if (!name || typeof name !== 'string') return { id, error: 'name required' };
+          const all = getAllAgents(config);
+          const def = all[name];
+          if (!def) return { id, error: `agent not found: ${name}` };
+          return {
+            id,
+            result: {
+              name,
+              ...def,
+              builtIn: name in builtInAgents,
+              modified: name in builtInAgents && name in config.agents,
+            },
+          };
+        }
+
+        case 'agents.set': {
+          const name = params?.name as string;
+          if (!name || typeof name !== 'string') return { id, error: 'name required' };
+          if (!/^[a-z0-9_-]+$/.test(name)) return { id, error: 'name must be lowercase alphanumeric, hyphens, or underscores' };
+          if (name.length > 64) return { id, error: 'name must be 64 characters or fewer' };
+          const description = params?.description as string;
+          const prompt = params?.prompt as string;
+          if (typeof description !== 'string' || !description) return { id, error: 'description required' };
+          if (typeof prompt !== 'string' || !prompt) return { id, error: 'prompt required' };
+          const validModels = ['sonnet', 'opus', 'haiku', 'inherit'];
+          if (params?.model !== undefined && (typeof params.model !== 'string' || !validModels.includes(params.model))) {
+            return { id, error: `model must be one of: ${validModels.join(', ')}` };
+          }
+          if (params?.tools !== undefined && (!Array.isArray(params.tools) || !params.tools.every((t: unknown) => typeof t === 'string'))) {
+            return { id, error: 'tools must be an array of strings' };
+          }
+          if (params?.skills !== undefined && (!Array.isArray(params.skills) || !params.skills.every((s: unknown) => typeof s === 'string'))) {
+            return { id, error: 'skills must be an array of strings' };
+          }
+          const def: import('../config.js').AgentDefinition = { description, prompt };
+          if (params?.tools) def.tools = params.tools as string[];
+          if (params?.skills) def.skills = params.skills as string[];
+          if (params?.model) def.model = params.model as typeof def.model;
+          config.agents[name] = def;
+          saveConfig(config);
+          broadcast({ event: 'agents.update', data: { name } });
+          return { id, result: { name, ...def, builtIn: name in builtInAgents, modified: true } };
+        }
+
+        case 'agents.delete': {
+          const name = params?.name as string;
+          if (!name || typeof name !== 'string') return { id, error: 'name required' };
+          if (name in builtInAgents && !(name in config.agents)) {
+            return { id, error: 'cannot delete built-in agent' };
+          }
+          delete config.agents[name];
+          saveConfig(config);
+          broadcast({ event: 'agents.update', data: { name } });
+          return { id, result: { deleted: true } };
+        }
+
+        case 'agents.reset': {
+          const name = params?.name as string;
+          if (!name || typeof name !== 'string') return { id, error: 'name required' };
+          if (!(name in builtInAgents)) return { id, error: 'not a built-in agent' };
+          const def = builtInAgents[name];
+          if (!(name in config.agents)) {
+            return { id, result: { name, ...def, builtIn: true, modified: false } };
+          }
+          delete config.agents[name];
+          saveConfig(config);
+          broadcast({ event: 'agents.update', data: { name } });
+          return { id, result: { name, ...def, builtIn: true, modified: false } };
         }
 
         case 'skills.list': {

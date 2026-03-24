@@ -45,12 +45,12 @@ export function ProviderCard({ gateway, disabled }: Props) {
     } catch (err) {
       console.error('failed to switch provider:', err);
     }
-  }, [gateway]);
+  }, [gateway.setProvider]);
 
   const handleAuthSuccess = useCallback(() => {
     setShowAuthSetup(false);
     gateway.getProviderStatus();
-  }, [gateway]);
+  }, [gateway.getProviderStatus]);
 
   const currentModel = gateway.model || cfg?.model || DEFAULT_CLAUDE_MODEL;
   const codexModel = cfg?.provider?.codex?.model || '';
@@ -62,7 +62,7 @@ export function ProviderCard({ gateway, disabled }: Props) {
     } catch (err) {
       console.error('failed to set codex model:', err);
     }
-  }, [gateway]);
+  }, [gateway.setConfig]);
 
   return (
     <Card>
