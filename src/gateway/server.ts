@@ -5239,13 +5239,16 @@ export async function startGateway(opts: GatewayOptions): Promise<Gateway> {
               let head = '';
               let branch = '';
               let bare = false;
+              let prunable = false;
               for (const line of lines) {
                 if (line.startsWith('worktree ')) wtPath = line.slice(9);
                 else if (line.startsWith('HEAD ')) head = line.slice(5);
                 else if (line.startsWith('branch ')) branch = line.slice(7).replace(/^refs\/heads\//, '');
                 else if (line === 'bare') bare = true;
+                else if (line === 'detached') branch = '(detached)';
+                else if (line.startsWith('prunable')) prunable = true;
               }
-              if (!wtPath || bare) continue;
+              if (!wtPath || bare || prunable) continue;
               // Get stats for each worktree
               try {
                 const stats = getWorktreeStats(wtPath);
