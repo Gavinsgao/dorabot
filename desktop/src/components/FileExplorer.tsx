@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils';
 import {
   Folder, File, ChevronRight, ChevronDown, FolderPlus, FilePlus, Pencil, Trash2,
   GitBranch, FolderGit2, Plus, Minus, FileEdit, RefreshCw, ArrowDownToLine, ArrowUpToLine,
-  Check, ChevronUp, Undo2, RotateCcw, X, Search,
+  Check, ChevronUp, Undo2, RotateCcw, X, Search, ChevronsUpDown,
 } from 'lucide-react';
 import { toast } from '@/hooks/useToast';
 
@@ -136,6 +136,99 @@ function timeAgo(dateStr: string): string {
   const days = Math.floor(hours / 24);
   if (days < 7) return `${days}d ago`;
   return new Date(dateStr).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+// ── Worktree Dropdown (for > 3 worktrees) ──────────────────────────
+
+function WorktreeDropdown({ mainBranch, worktrees, activeWorktreePath, onSelect, onRemove, removingWorktree }: {
+  mainBranch: string;
+  worktrees: WorktreeInfo[];
+  activeWorktreePath: string | null;
+  onSelect: (path: string | null) => void;
+  onRemove: (wt: WorktreeInfo) => void;
+  removingWorktree: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // close on outside click
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const activeWt = worktrees.find(wt => wt.path === activeWorktreePath);
+  const activeLabel = activeWt ? activeWt.branch : mainBranch;
+  const activeIcon = activeWt ? FolderGit2 : GitBranch;
+  const ActiveIcon = activeIcon;
+
+  const allItems: { path: string | null; branch: string; icon: typeof GitBranch; dirtyCount: number; worktree?: WorktreeInfo }[] = [
+    { path: null, branch: mainBranch, icon: GitBranch, dirtyCount: 0 },
+    ...worktrees.map(wt => ({
+      path: wt.path as string | null,
+      branch: wt.branch,
+      icon: FolderGit2,
+      dirtyCount: wt.staged + wt.changed + wt.untracked,
+      worktree: wt,
+    })),
+  ];
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        className="flex items-center gap-1.5 w-full px-2 py-1 rounded-md text-[10px] font-medium bg-secondary/50 hover:bg-secondary transition-colors"
+        onClick={() => setOpen(!open)}
+      >
+        <ActiveIcon className="w-2.5 h-2.5 text-muted-foreground shrink-0" />
+        <span className="truncate">{activeLabel}</span>
+        <span className="ml-auto text-[9px] text-muted-foreground shrink-0">{worktrees.length + 1} worktrees</span>
+        <ChevronsUpDown className="w-2.5 h-2.5 text-muted-foreground shrink-0" />
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 right-0 z-50 mt-0.5 rounded-md border border-border bg-popover shadow-md overflow-hidden">
+          {allItems.map(item => {
+            const isActive = item.path === activeWorktreePath;
+            return (
+              <div
+                key={item.path ?? '__main'}
+                className={cn(
+                  'group flex items-center gap-1.5 px-2 py-1.5 text-[10px] cursor-pointer transition-colors',
+                  isActive ? 'bg-primary/10 text-foreground' : 'text-muted-foreground hover:bg-secondary/50 hover:text-foreground'
+                )}
+                onClick={() => { onSelect(item.path); setOpen(false); }}
+              >
+                <item.icon className="w-2.5 h-2.5 shrink-0" />
+                <span className="truncate">{item.branch}</span>
+                {item.dirtyCount > 0 && (
+                  <span className="inline-flex items-center justify-center min-w-[14px] h-3.5 px-1 rounded-full text-[8px] font-bold bg-warning/20 text-warning">
+                    {item.dirtyCount}
+                  </span>
+                )}
+                {isActive && <Check className="w-2.5 h-2.5 ml-auto shrink-0 text-primary" />}
+                {item.worktree && (
+                  <button
+                    className={cn(
+                      'hidden group-hover:flex items-center justify-center w-4 h-4 rounded-sm ml-auto transition-colors',
+                      'text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10',
+                    )}
+                    onClick={(e) => { e.stopPropagation(); onRemove(item.worktree!); }}
+                    disabled={removingWorktree === item.path}
+                    title="Remove worktree"
+                  >
+                    <Trash2 className="w-2.5 h-2.5" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Git Source Control Panel (VS Code style) ───────────────────────
@@ -601,63 +694,73 @@ function GitPanel({ rpc, gitState, onFileClick, onOpenDiff, onRefresh, onOpenTer
       {/* worktree context bar */}
       {showWorktreeBar && (
         <div className="px-1.5 py-1 border-b border-border shrink-0">
-          <div className="flex items-center gap-1 flex-wrap">
-            {/* main repo chip */}
-            <button
-              className={cn(
-                'inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium transition-colors shrink-0',
-                !activeWorktreePath
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground'
-              )}
-              onClick={() => setActiveWorktreePath(null)}
-            >
-              <GitBranch className="w-2.5 h-2.5" />
-              <span className="truncate max-w-[100px]">{gitState.branch || 'main'}</span>
-            </button>
-            {/* worktree chips */}
-            {nonMainWorktrees.map(wt => {
-              const isActive = activeWorktreePath === wt.path;
-              const dirtyCount = wt.staged + wt.changed + wt.untracked;
-              return (
-                <div key={wt.path} className="relative group shrink-0 flex items-center">
-                  <button
-                    className={cn(
-                      'inline-flex items-center gap-1 pl-2 pr-1.5 py-0.5 rounded-md text-[10px] font-medium transition-colors',
-                      isActive
-                        ? 'bg-primary text-primary-foreground'
-                        : 'bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground'
-                    )}
-                    onClick={() => setActiveWorktreePath(isActive ? null : wt.path)}
-                    title={wt.path}
-                  >
-                    <FolderGit2 className="w-2.5 h-2.5" />
-                    <span className="truncate max-w-[100px]">{wt.branch}</span>
-                    {dirtyCount > 0 && (
-                      <span className={cn(
-                        'inline-flex items-center justify-center min-w-[14px] h-3.5 px-1 rounded-full text-[8px] font-bold',
-                        isActive ? 'bg-primary-foreground/20 text-primary-foreground' : 'bg-warning/20 text-warning',
-                      )}>
-                        {dirtyCount}
-                      </span>
-                    )}
-                  </button>
-                  {/* remove button on hover */}
-                  <button
-                    className={cn(
-                      'hidden group-hover:flex items-center justify-center w-4 h-4 rounded-sm ml-0.5 transition-colors',
-                      'text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10',
-                    )}
-                    onClick={(e) => { e.stopPropagation(); handleRemoveWorktree(wt); }}
-                    disabled={removingWorktree === wt.path}
-                    title="Remove worktree"
-                  >
-                    <Trash2 className="w-2.5 h-2.5" />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
+          {nonMainWorktrees.length <= 3 ? (
+            /* chips mode for <= 3 worktrees */
+            <div className="flex items-center gap-1">
+              <button
+                className={cn(
+                  'inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium transition-colors shrink-0',
+                  !activeWorktreePath
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground'
+                )}
+                onClick={() => setActiveWorktreePath(null)}
+              >
+                <GitBranch className="w-2.5 h-2.5" />
+                <span className="truncate max-w-[100px]">{gitState.branch || 'main'}</span>
+              </button>
+              {nonMainWorktrees.map(wt => {
+                const isActive = activeWorktreePath === wt.path;
+                const dirtyCount = wt.staged + wt.changed + wt.untracked;
+                return (
+                  <div key={wt.path} className="relative group shrink-0 flex items-center">
+                    <button
+                      className={cn(
+                        'inline-flex items-center gap-1 pl-2 pr-1.5 py-0.5 rounded-md text-[10px] font-medium transition-colors',
+                        isActive
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-secondary/50 text-muted-foreground hover:bg-secondary hover:text-foreground'
+                      )}
+                      onClick={() => setActiveWorktreePath(isActive ? null : wt.path)}
+                      title={wt.path}
+                    >
+                      <FolderGit2 className="w-2.5 h-2.5" />
+                      <span className="truncate max-w-[100px]">{wt.branch}</span>
+                      {dirtyCount > 0 && (
+                        <span className={cn(
+                          'inline-flex items-center justify-center min-w-[14px] h-3.5 px-1 rounded-full text-[8px] font-bold',
+                          isActive ? 'bg-primary-foreground/20 text-primary-foreground' : 'bg-warning/20 text-warning',
+                        )}>
+                          {dirtyCount}
+                        </span>
+                      )}
+                    </button>
+                    <button
+                      className={cn(
+                        'hidden group-hover:flex items-center justify-center w-4 h-4 rounded-sm ml-0.5 transition-colors',
+                        'text-muted-foreground/50 hover:text-destructive hover:bg-destructive/10',
+                      )}
+                      onClick={(e) => { e.stopPropagation(); handleRemoveWorktree(wt); }}
+                      disabled={removingWorktree === wt.path}
+                      title="Remove worktree"
+                    >
+                      <Trash2 className="w-2.5 h-2.5" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            /* dropdown mode for > 3 worktrees */
+            <WorktreeDropdown
+              mainBranch={gitState.branch || 'main'}
+              worktrees={nonMainWorktrees}
+              activeWorktreePath={activeWorktreePath}
+              onSelect={setActiveWorktreePath}
+              onRemove={handleRemoveWorktree}
+              removingWorktree={removingWorktree}
+            />
+          )}
         </div>
       )}
 
