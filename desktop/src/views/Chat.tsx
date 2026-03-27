@@ -468,7 +468,7 @@ function AskUserQuestionPanel({
       >
         <div className="flex items-center gap-2 min-w-0">
           <MessageCircle className="w-3 h-3 text-primary shrink-0" />
-          <span className="text-xs font-medium truncate">{q.header}: {q.question}</span>
+          <span className="text-xs font-medium">{q.header}: {q.question}</span>
           {total > 1 && (
             <span className="text-[10px] text-muted-foreground shrink-0">{step + 1}/{total}</span>
           )}
@@ -484,7 +484,6 @@ function AskUserQuestionPanel({
       {/* Expandable content */}
       {!collapsed && (
         <div className="px-3 pb-2 space-y-1.5">
-          <p className="text-xs text-foreground leading-snug">{q.question}</p>
           <div className="flex flex-col gap-1">
             {options.map((opt, oi) => {
               const selected = q.multiSelect
