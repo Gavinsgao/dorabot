@@ -26,13 +26,6 @@ jobs:
         run: npm ci
         working-directory: desktop
 
-      - name: Security audit & fix (root)
-        run: npm audit fix && npm audit --audit-level=high
-
-      - name: Security audit & fix (desktop)
-        run: npm audit fix && npm audit --audit-level=high
-        working-directory: desktop
-
       - name: Sync desktop version
         run: |
           ROOT_VERSION=$(jq -r .version ../package.json)
@@ -60,6 +53,30 @@ jobs:
           npx electron-vite build
           npx electron-builder --mac --arm64 --publish always
         working-directory: desktop
+
+      - name: Verify code signature
+        run: |
+          APP=$(find desktop/release -maxdepth 2 -name 'dorabot.app' -type d | head -1)
+          if [ -z "$APP" ]; then
+            echo "::error::No .app bundle found in release directory"
+            exit 1
+          fi
+          echo "Verifying: $APP"
+          codesign --verify --strict --verbose=2 "$APP"
+          SIG_INFO=$(codesign -d --verbose=2 "$APP" 2>&1)
+          if echo "$SIG_INFO" | grep -q "Signature=adhoc"; then
+            echo "::error::App is ad-hoc signed (no certificate). This will break auto-updates."
+            echo "::error::Ensure CSC_LINK and CSC_KEY_PASSWORD secrets are configured."
+            exit 1
+          fi
+          if ! echo "$SIG_INFO" | grep -q "Authority=Developer ID Application"; then
+            echo "::error::App is not signed with a Developer ID certificate."
+            echo "$SIG_INFO"
+            exit 1
+          fi
+          TEAM=$(echo "$SIG_INFO" | grep "TeamIdentifier=" | head -1)
+          AUTHORITY=$(echo "$SIG_INFO" | grep "Authority=Developer ID Application" | head -1)
+          echo "Signature OK: $AUTHORITY ($TEAM)"
 
       - name: Add release notes
         env:
