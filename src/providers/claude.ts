@@ -862,7 +862,7 @@ export class ClaudeProvider implements Provider {
     // Build thinking config — auto-coerce to adaptive for 4.6+ models (budgetTokens deprecated/removed)
     let thinking: { type: 'adaptive'; display?: 'summarized' | 'omitted' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' } | undefined;
     const thinkingCfg = opts.config.thinking;
-    const modelNeedAdaptive = opts.model.includes('-4-6') || opts.model.includes('-4-7');
+    const modelNeedAdaptive = /claude-(?:opus|sonnet)-4-(?:[6-9]|\d{2,})(?:-|$)/.test(opts.model);
     if (modelNeedAdaptive && thinkingCfg && typeof thinkingCfg === 'object' && 'type' in thinkingCfg && (thinkingCfg as any).type === 'enabled') {
       // budgetTokens is deprecated on 4.6, removed on 4.7 (returns 400) — force adaptive
       console.warn(`[claude] budgetTokens not supported on ${opts.model}, using adaptive thinking instead`);

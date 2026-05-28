@@ -1,6 +1,6 @@
 {
   "name": "dorabot",
-  "version": "0.2.91",
+  "version": "0.2.92",
   "type": "module",
   "description": "Open-source personal AI agent. Persistent memory, multi-channel messaging, browser automation, and proactive goal management.",
   "main": "dist/index.js",
@@ -30,10 +30,11 @@
     "test:model-catalog": "node scripts/test-model-catalog.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.111",
+    "@anthropic-ai/claude-agent-sdk": "0.3.154",
+    "@anthropic-ai/sdk": "0.97.1",
     "@grammyjs/runner": "2.0.3",
     "@grammyjs/transformer-throttler": "1.2.1",
-    "@modelcontextprotocol/sdk": "1.26.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@openai/codex": "0.128.0",
     "@types/luxon": "3.7.1",
     "@whiskeysockets/baileys": "6.7.21",
@@ -63,7 +64,7 @@
   },
   "overrides": {
     "axios": "1.15.2",
-    "protobufjs": "7.5.5"
+    "protobufjs": "7.5.8"
   },
   "engines": {
     "node": ">=22.0.0"

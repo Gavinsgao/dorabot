@@ -1,6 +1,6 @@
 {
   "name": "dorabot-desktop",
-  "version": "0.2.91",
+  "version": "0.2.92",
   "description": "Desktop control center for dorabot",
   "main": "out/main/main.js",
   "scripts": {
@@ -78,6 +78,7 @@
     "vite": "6.4.2"
   },
   "overrides": {
-    "dompurify": "3.3.2"
+    "dompurify": "3.3.2",
+    "tmp": "0.2.6"
   }
 }
